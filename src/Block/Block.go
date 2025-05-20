@@ -1,17 +1,23 @@
 package block
 
-import "crypto/sha256"
-import "encoding/hex"
-import "strconv"
-import "time"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"math"
+	"math/big"
+	"math/rand"
+	"strconv"
+	"time"
+)
 
 type Block struct{
-	Index       int
-	Timestamp   string
-	Data        string
-	PrevHash    string
-	Hash        string
-	Nonce       int
+	Index        int
+	Timestamp    int64
+	Data         string
+	PrevHash     string
+	Hash         string
+	Nonce        int
+	Difficulity  int
 }
 
 func (b *Block) CalculateHash() string {
@@ -33,23 +39,74 @@ func GenerateBlock(prevBlock Block, data string) Block {
 	return newBlock
 }
 
-func CreateGenesisBlock() Block {
+func CreateGenesisBlock(difficulity int) Block {
 	genesis:= Block{
 		Index: 0,
-		Timestamp: time.Now().String(),
+		Timestamp: time.Now().Unix(),
 		Data: "Genesis Block",
 		PrevHash: "",
 		Nonce: 0,
+		Difficulity: difficulity,
 	}
 	genesis.Hash = genesis.CalculateHash()
 	return genesis
 }
 
+func generateNewBlockWithPow(PrevHash Block, data string, difficulity int) Block{
+	var nonce int 
+	timestamp := time.Now().Unix()
+	newBlock := Block{
+		Index: prevBlock.Index +1,
+		Timestamp: timestamp,
+		PrevHash: PrevHash.Hash,
+		Data: data,
+		Nonce: 0,
+		Difficulity: difficulity,
+	}
 
-func main() {
-    genesis := block.CreateGenesisBlock()
-    fmt.Println("Genesis Block:", genesis)
+	target := big.NewInt(1)
+	target.Lsh(target, uint(256-difficulity))
+	for nonce < math.MaxInt64 {
+		newBlock.Nonce = nonce
+		hash := CalculateHash(newBlock)
+		hashInt := new(big.Int)
+		hashInt.SetString(hash, 16)
+		if hashInt.Cmp(target) == -1 {
+			newBlock.Hash = hash
+			break
+		} else {
+			nonce++
+		}
+	}
+	return newBlock
+}
 
-    nextBlock := block.GenerateBlock(genesis, "My first transaction")
-    fmt.Println("Next Block:", nextBlock)
+func CreateGenesisBlockForPos(difficulity int) Block {
+	timestamp := time.Now().Unix()
+	genesisBlock := Block {
+		Index: 0,
+		Timestamp: timestamp,
+		PrevHash: 0,
+		Data: "Genesis Block",
+		Nonce: 0,
+		Difficulity: difficulity,
+	}
+	genesisBlock.Hash = CalculateHash(genesisBlock)
+	return genesisBlock
+}
+
+func generateNewBlockWithPos(prevBlock Block, data string, difficulity int, validators []string) Block {
+	timestamp := time.Now().Unix()
+	newBlock := Block{
+		Index: prevBlock.Index +1,
+		Timestamp: timestamp,
+		PrevHash: prevBlock.Hash,
+		Data: data,
+		Nonce: 0,
+		Difficulity: difficulity,
+	}
+	rand.Seed(time.Now().UnixNano())
+	validatorsIndex := rand.Intn(len(validators))
+	validators.Hash = CalculateHash(newBlock + validator)
+	return newBlock
 }
