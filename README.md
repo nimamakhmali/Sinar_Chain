@@ -40,13 +40,19 @@ We are combining proven mechanisms from **Ethereum (EVM, PoS/PoW)** and **Fantom
 
 ```bash
 sinar-chain/
-├── cmd/               # Entry points (node, cli, etc.)
-├── core/              # Blockchain logic (blocks, tx, state)
-├── consensus/         # PoS / DAG consensus engine
-├── crypto/            # Hashing, signing, keypairs
-├── network/           # P2P messaging & discovery
-├── api/               # REST/gRPC interfaces
-├── tests/             # Unit & integration tests
-├── scripts/           # Build, deploy, utils
-├── docs/              # Documentation
-└── README.md
+├── cmd/                     # Entry point(s) of the application (e.g., main.go)
+├── core/                    # Core blockchain components such as blocks, transactions, and node state management
+├── crypto/                  # Cryptographic utilities including hashing, signing, and key management
+├── network/                 # Peer-to-peer networking layer responsible for discovery and message propagation
+├── consensus/               # Consensus algorithms implementation (e.g., Lachesis, Ethash)
+├── api/                     # RESTful or gRPC API server for external interaction with the blockchain
+├── explorer/                # (Optional) Blockchain explorer frontend to visualize blocks and transactions
+├── scripts/                 # Build, deployment, and automation scripts for development workflows
+├── docs/                    # Project documentation including design specs and technical guides
+├── tests/                   # Unit and integration tests to ensure code quality and correctness
+├── .github/                 # GitHub configuration files such as Actions workflows, issue and PR templates
+├── .gitignore               # Specifies intentionally untracked files to ignore in Git
+├── README.md                # Project overview, setup instructions, and general information
+├── LICENSE                  # Licensing information for the project (e.g., MIT, Apache 2.0)
+└── CONTRIBUTING.md          # Guidelines for contributing to the project and code of conduct
+
