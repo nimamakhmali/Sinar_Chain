@@ -1,0 +1,49 @@
+package dag
+
+import "errors"
+
+type DAG struct {
+	events    map[string]*Event
+	children  map[string][]string
+	roots     map[string]bool
+}
+
+func NewDAG() *DAG {
+	return &DAG{
+		events   :  make(map[string]*Event),
+		children :  make(map[string][]string),
+		roots    :  make(map[string]bool),
+	}
+}
+
+func (g *DAG) AddEvent(e *Event) error {
+	if _, exists := g.events[e.Hash]; exists {
+	return errors.New("event already exists")
+	}
+
+	g.events[e.Hash] = e
+
+	for _, parent := range e.Parents {
+		g.children[parent] = append(g.children[parent], e.Hash)
+	}
+	
+	if len(e.Parents) == 0 {
+		g.roots[e.Hash] = true
+	}else {
+		allKnown := true
+		for _, p := range e.Parents {
+			if _, exists := g.events[p]; !exists {
+				allKnown = false
+				break
+			}
+		}
+		if !allKnown {
+			g.roots[e.Hash] = true
+		}
+	}
+	return nil
+}
+
+func (g *DAG) GetChildren(hash string) []string {
+	return g.children[hash]
+}
