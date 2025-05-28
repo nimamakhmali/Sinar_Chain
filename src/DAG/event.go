@@ -8,7 +8,7 @@ type Event struct {
 	Creator   string // hash
 	Index     uint64   // number for builders node
 	Parents   []string // hash parent
-	Timestamp time.time
+	Timestamp time.Time
 	TxData    [][]byte
 	Signature []byte
 	Hash      string
