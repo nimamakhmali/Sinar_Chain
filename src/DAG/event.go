@@ -2,6 +2,7 @@ package dag
 
 import "crypto/sha256"
 import "encoding/hex"
+import "encoding/binary"
 import "time"
 
 type Event struct {

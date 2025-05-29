@@ -1,6 +1,8 @@
 package dag
 
-import "errors"
+import  "errors"
+import 	"hash"
+
 
 type DAG struct {
 	events    map[string]*Event
@@ -46,4 +48,9 @@ func (g *DAG) AddEvent(e *Event) error {
 
 func (g *DAG) GetChildren(hash string) []string {
 	return g.children[hash]
+}
+
+func (g *DAG) HasEvent(hash string) bool {
+    _, exists := g.events[hash]
+    return exists
 }
