@@ -54,3 +54,17 @@ func (g *DAG) HasEvent(hash string) bool {
     _, exists := g.events[hash]
     return exists
 }
+
+func (g *DAG) ValidateEvent(e *Event) error {
+
+    if e.Hash != e.ComputeHash() {
+        return errors.New("invalid event hash")
+    }
+
+    for _, parent := range e.Parents {
+        if !g.HasEvent(parent) {
+            return errors.New("parent event not found")
+        }
+    }
+    return nil
+}
