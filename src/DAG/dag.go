@@ -68,3 +68,25 @@ func (g *DAG) ValidateEvent(e *Event) error {
     }
     return nil
 }
+
+func (g *DAG) SelectParents() []string {
+    var parents []string
+    if len(g.roots) >= 2 {
+        i := 0
+        for hash := range g.roots {
+            if i >= 2 {
+                break
+            }
+            parents = append(parents, hash)
+            i++
+        }
+    } else if len(g.roots) == 1 {
+        for hash := range g.roots {
+            parents = append(parents, hash)
+            if len(g.children[hash]) > 0 {
+                parents = append(parents, g.children[hash][0])
+            }
+        }
+    }
+    return parents
+}
