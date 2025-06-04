@@ -50,6 +50,13 @@ type Event struct {
 	size         atomic.Value
 }
 
+type rlpEvent struct {
+	Header       EventHeader
+	Transactions types.Transactions
+	Signature    []byte
+	Payload      [][]byte
+}
+
 
 func NewEvent(creator string, parents []EventID, epoch uint64, lamport uint64, txs []transaction) *Event {
 	height := uint64(0)
@@ -119,3 +126,29 @@ func (e *Event) VerifySignature(pub *ecdsa.PublicKey) bool {
 	}
 	return recovered.X.Cmp(pub.X) == 0 && recovered.Y.Cmp(pub.Y) == 0
 }
+
+func (e *Event) EncodeRLP() ([]byte, error) {
+	enc := rlpEvent{
+		Header:       e.EventHeader,
+		Transactions: e.Transactions,
+		Signature:    e.Signature,
+		Payload:      e.Payload,
+	}
+	return rlp.EncodeToBytes(enc)
+}
+
+func DecodeRLP(data []byte) (*Event, error) {
+	var dec rlpEvent
+	err := rlp.DecodeBytes(data, &dec)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Event{
+		EventHeader:  dec.Header,
+		Transactions: dec.Transactions,
+		Signature:    dec.Signature,
+		Payload:      dec.Payload,
+	}, nil
+}
+
