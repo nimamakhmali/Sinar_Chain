@@ -3,110 +3,86 @@ package block
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"math"
-	"math/big"
-	"math/rand"
 	"strconv"
 	"time"
+	"crypto/ecdsa"
+	"crypto/rand"
+	"crypto/sha256"
+	"math/big"
+
+	"../core"
+
+
 )
 
-type Block struct{
-	Index        int
-	Timestamp    int64
-	Data         string
-	PrevHash     string
-	Hash         string
-	Nonce        int
-	Difficulity  int
+type Block struct {
+	Index     uint64
+	Timestamp time.Time
+	Events    []*core.Event
+	TxRoot    []byte
+	PrevHash  string
+	Hash      string
+	Signature []byte
+	Validator string
 }
 
+func signBlock(b Block, privateKey *ecdsa.PrivateKey) []byte {
+	hash := sha256.Sum256([]byte(b.Hash))
+	r, s, err := ecdsa.Sign(rand.Reader, privateKey, hash[:])
+	if err != nil {
+		return nil
+	}
+	return append(r.Bytes(), s.Bytes()...)
+}
+
+// BuildBlockFromEvents creates a block from a list of finalized events
+func BuildBlockFromEvents(events []*core.Event, prevHash string, validator string, index uint64, privateKey []byte) Block {
+	txs := collectAllTransactions(events)  // TODO: implement this function
+	txRoot := hashTransactions(txs)        // TODO: implement this function
+
+	block := Block{
+		Index:     index,
+		Timestamp: time.Now(),
+		Events:    events,
+		TxRoot:    txRoot,
+		PrevHash:  prevHash,
+		Validator: validator,
+	}
+
+	block.Hash = block.CalculateHash()
+	block.Signature = signBlock(block, privateKey) // TODO: implement this function
+	return block
+}
+
+// CalculateHash generates the hash of the block's metadata
 func (b *Block) CalculateHash() string {
-	record := strconv.Itoa(b,Index) + b.Timestamp + b.Data + b.PrevHash + strconv.Itoa((b, Nonce))
-	h := sha256.New()
-	h.Write([]byte(record))
-	return hex.EncodeToString(h.Sum(nil))
+	record := strconv.FormatUint(b.Index, 10) +
+		b.Timestamp.String() +
+		string(b.TxRoot) +
+		b.PrevHash +
+		b.Validator
+
+	hash := sha256.New()
+	hash.Write([]byte(record))
+	return hex.EncodeToString(hash.Sum(nil))
 }
 
-func GenerateBlock(prevBlock Block, data string) Block {
-	newBlock := Block {
-		Index: PrevBlock.Index + 1,
-		Timestamp: time.Now().String(),
-		Data: data,
-		PrevHash: prevBlock.Hash,
-		Nonce: 0,
-	}
-	newBlock.Hash = newBlock.CalculateHash()
-	return newBlock
-}
-
-func CreateGenesisBlock(difficulity int) Block {
-	genesis:= Block{
-		Index: 0,
-		Timestamp: time.Now().Unix(),
-		Data: "Genesis Block",
-		PrevHash: "",
-		Nonce: 0,
-		Difficulity: difficulity,
-	}
-	genesis.Hash = genesis.CalculateHash()
-	return genesis
-}
-
-func generateNewBlockWithPow(PrevHash Block, data string, difficulity int) Block{
-	var nonce int 
-	timestamp := time.Now().Unix()
-	newBlock := Block{
-		Index: prevBlock.Index +1,
-		Timestamp: timestamp,
-		PrevHash: PrevHash.Hash,
-		Data: data,
-		Nonce: 0,
-		Difficulity: difficulity,
-	}
-
-	target := big.NewInt(1)
-	target.Lsh(target, uint(256-difficulity))
-	for nonce < math.MaxInt64 {
-		newBlock.Nonce = nonce
-		hash := CalculateHash(newBlock)
-		hashInt := new(big.Int)
-		hashInt.SetString(hash, 16)
-		if hashInt.Cmp(target) == -1 {
-			newBlock.Hash = hash
-			break
-		} else {
-			nonce++
+func collectAllTransactions(events []*core.Event) [][]byte {
+	var txs [][]byte
+	for _, ev := range events {
+		for _, tx := range ev.Transactions {
+			// فرض بر اینکه هر tx خودش []byte است
+			txs = append(txs, tx)
 		}
 	}
-	return newBlock
+	return txs
 }
 
-func CreateGenesisBlockForPos(difficulity int) Block {
-	timestamp := time.Now().Unix()
-	genesisBlock := Block {
-		Index: 0,
-		Timestamp: timestamp,
-		PrevHash: 0,
-		Data: "Genesis Block",
-		Nonce: 0,
-		Difficulity: difficulity,
+func hashTransactions(txs [][]byte) []byte {
+	h := sha256.New()
+	for _, tx := range txs {
+		h.Write(tx)
 	}
-	genesisBlock.Hash = CalculateHash(genesisBlock)
-	return genesisBlock
+	return h.Sum(nil)
 }
 
-func generateNewBlockWithPos(prevBlock Block, data string, difficulity int, validators []string) Block {
-	timestamp := time.Now().Unix()
-	newBlock := Block{
-		Index: prevBlock.Index +1,
-		Timestamp: timestamp,
-		PrevHash: prevBlock.Hash,
-		Data: data,
-		Nonce: 0,
-		Difficulity: difficulity,
-	}
-	rand.Seed(time.Now().UnixNano())
-	validatorsIndex := rand.Intn(len(validators))
-	validators.Hash = CalculateHash(newBlock + validator)
-	return newBlock
-}
