@@ -1,0 +1,51 @@
+Event
+
+SelfParentHash   هش رویداد قبلی همین نود
+OtherParentHash  یکی از رویدادهای اخیر از نودهای دیگر، برای اتصال DAG
+CreatorID        یک شناسه یکتا برای نود (مثلاً آدرس یا public key hash)
+Transactions     لیست تراکنش‌ها در این event
+Timestamp        زمان ایجاد توسط سازنده (برای ترتیب‌بندی نسبی)
+LamportTime      زمان منطقی برای اجماع (در الگوریتم Lachesis استفاده می‌شه)
+Signature        امضای دیجیتال کل محتوا توسط نود سازنده
+Hash             هش کل event، به‌عنوان ID منحصر‌به‌فرد
+Round            در چه round اجماع قرار داره
+IsRoot	         آیا root شناخته‌شده برای round هست؟
+IsFamous	     آیا توسط اکثریت نودها شناخته‌شده (برای انتخاب بلاک)
+ClothoConfirmed	 آیا تبدیل به Clotho شده (مرحله نهایی اجماع)
+AtroposTime	     زمان نهایی‌سازی (finality) برای این event
+
+
+
+Hash
+این فیلدها مهم هستند
+dataToHash := concatenate(
+    SelfParentHash,
+    OtherParentHash,
+    CreatorPubKey,
+    Transactions,
+    Timestamp,
+)
+hash := sha256(dataToHash)
+
+امضای دیجیتال Sign
+
+signature, err := ecdsa.SignASN1(rand.Reader, privateKey, hash)
+
+
+فقط بعد از ساختن SelfParent و داشتن یک OtherParent معتبر، event ساخته می‌شه.
+
+هر نود یک DAG داخلی برای نگهداری رویدادها داره.
+
+اجماع Lachesis درون همین DAG اتفاق می‌افته.
+
+بعد از اجماع، بعضی Eventها به عنوان Atropos انتخاب می‌شن و از اون‌ها برای ساخت Block نهایی استفاده می‌کنی.
+
+
+
+
+
+
+
+Witness Event
+
+Witness یک Event خاص در DAG است که اولین Event ساخته‌شده توسط یک نود در یک Round خاص است.

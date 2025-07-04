@@ -1,7 +1,8 @@
 package dag
 
 import (
-	"crypto"
+	"ftm"
+ 	"crypto"
 	"crypto/rand"
 	"crypto/ecdsa"
 	"crypto/sha256"

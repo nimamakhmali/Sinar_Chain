@@ -6,7 +6,6 @@ import (
 	"crypto/ecdsa"
 	"fmt"
 	"sync/atomic"
-
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/rlp"
 	"golang.org/x/crypto/sha3"
@@ -27,17 +26,23 @@ type transaction struct {
 
 // EventHeader contains metadata of the event
 type EventHeader struct {
-	Creator     string        // ID or Address of the node
-	Parents     []EventID     // references to parent events
-	Lamport     uint64        // Lamport timestamp (logical clock)
-	Epoch       uint64        // epoch number
-	ExtraData   []byte        // custom extra info
-	TxHash      []byte        // hash of transactions
-	TxCount     int
-	Round       uint64        // برای الگوریتم اجماع DAG
-	Frame       uint64        // (optional) برای دسته‌بندی منطقی
-	Height      uint64        // بیشینه‌ی (height والدها) + 1
-	hash        atomic.Value  // cached hash
+	//ID            string
+	CreatorID     string        // ID or Address of the node
+	Parents       []EventID     // references to parent events
+	Lamport       uint64        // Lamport timestamp (logical clock)
+	Epoch         uint64        // epoch number
+	ExtraData     []byte        // custom extra info
+	TxHash        [32]byte        // hash of transactions
+	TxCount       int
+	Round         uint64        // برای الگوریتم اجماع DAG
+	Frame         uint64        // (optional) برای دسته‌بندی منطقی
+	Height        uint64        // بیشینه‌ی (height والدها) + 1
+	RoundReceived uint64        // dar kodam round be ejmae reside?
+	IsFamous      *bool         // is famous ?
+	Atropos       EventID       // hash event nahaii ke ino taeed karde
+	AtroposTime   uint64        // zaman ejmae nahaii
+	MedianTime    uint64        // Average time of dag
+	hash          atomic.Value  // cached hash
 }
 
 
@@ -58,11 +63,11 @@ type rlpEvent struct {
 }
 
 
-func NewEvent(creator string, parents []EventID, epoch uint64, lamport uint64, txs []transaction) *Event {
+func NewEvent(creatorID string, parents []EventID, epoch uint64, lamport uint64, txs []transaction) *Event {
 	height := uint64(0)
 	return &Event {
 		EventHeader: EventHeader{
-			Creator:  creator,
+			CreatorID:  creatorID,
 			Parents:  parents,
 			Epoch:    epoch,
 			Lamport:  lamport,
@@ -151,4 +156,3 @@ func DecodeRLP(data []byte) (*Event, error) {
 		Payload:      dec.Payload,
 	}, nil
 }
-
