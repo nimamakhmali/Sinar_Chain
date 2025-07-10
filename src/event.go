@@ -41,6 +41,9 @@ type EventHeader struct {
 	AtroposTime   uint64       // zaman ejmae nahaii
 	MedianTime    uint64       // Average time of dag
 	hash          atomic.Value // cached hash
+	IsRoot        bool
+	IsClotho      bool // ✅ نشان می‌دهد این رویداد Clotho شده
+
 }
 
 // Event is a full structure containing all necessary data for DAG
