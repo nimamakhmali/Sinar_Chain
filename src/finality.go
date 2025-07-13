@@ -43,7 +43,7 @@ func (d *DAG) FinalizeEvents() {
 			}
 
 			if float64(trueVotes) >= (2.0 / 3.0 * float64(total)) {
-				// ✅ تبدیل به Atropos
+				//  تبدیل به Atropos
 				e.Atropos = e.Hash()
 				e.RoundReceived = rp2
 

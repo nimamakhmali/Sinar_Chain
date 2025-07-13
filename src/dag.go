@@ -1,10 +1,9 @@
 package core
 
-import (
-	"errors"
-	"sinar_chain/src/event"
-	"sync"
-)
+import	"errors"
+import	"sinar_chain/src/event"
+import	"sync"
+
 
 // DAG نگهدارنده DAG از رویدادهاست
 type DAG struct {

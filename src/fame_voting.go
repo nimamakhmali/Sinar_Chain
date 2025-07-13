@@ -1,8 +1,8 @@
 package core
 
-import (
-	"crypto/sha256"
-)
+
+import	"crypto/sha256"
+
 
 type Vote struct {
 	Vote    bool
