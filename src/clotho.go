@@ -1,4 +1,4 @@
-package core
+package main
 
 // SelectClothos انتخاب Witnessهایی که تبدیل به Clotho می‌شن
 func (d *DAG) SelectClothos() {
@@ -8,7 +8,6 @@ func (d *DAG) SelectClothos() {
 			if !ok || w.IsClotho || w.IsFamous == nil || !*w.IsFamous {
 				continue
 			}
-
 			// بررسی Witnessهای round+1
 			nextRound := round + 1
 			nextInfo, exists := d.Rounds[nextRound]

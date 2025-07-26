@@ -1,4 +1,4 @@
-package core
+package main
 
 import "sort"
 
@@ -22,7 +22,7 @@ func (d *DAG) FinalizeEvents() {
 			total := 0
 
 			for wid := range nextInfo.Witnesses {
-				voter, _ := d.GetEvent(wid)
+				//voter, _ := d.GetEvent(wid)
 				if !d.IsAncestor(eid, wid) {
 					continue
 				}
@@ -60,7 +60,6 @@ func (d *DAG) FinalizeEvents() {
 		}
 	}
 }
-
 
 func median(values []uint64) uint64 {
 	if len(values) == 0 {

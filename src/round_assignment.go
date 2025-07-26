@@ -1,4 +1,4 @@
-package core
+package main
 
 // RoundInfo اطلاعات مربوط به یک Round اجماع
 type RoundInfo struct {

@@ -1,8 +1,6 @@
-package core
+package main
 
-
-import	"crypto/sha256"
-
+import "crypto/sha256"
 
 type Vote struct {
 	Vote    bool
@@ -33,7 +31,7 @@ func (d *DAG) StartFameVoting() {
 				falseVotes := 0
 
 				for voterID := range voters {
-					voter, _ := d.GetEvent(voterID)
+					//voter, _ := d.GetEvent(voterID)
 
 					// رأی موجود؟
 					if d.Votes[voterID] == nil {

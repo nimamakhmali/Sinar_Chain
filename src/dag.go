@@ -1,11 +1,12 @@
-package core
+package main
 
-import	"errors"
-import	"sinar_chain/src/event"
-import	"sync"
+import (
+	"errors"
+	"sync"
 
+	"github.com/ethereum/go-ethereum/core/types"
+)
 
-// DAG نگهدارنده DAG از رویدادهاست
 type DAG struct {
 	Events map[EventID]*Event
 	Rounds RoundTable
@@ -13,19 +14,16 @@ type DAG struct {
 	mu     sync.RWMutex
 }
 
-
-// NewDAG ایجاد یک DAG جدید خالی
 func NewDAG() *DAG {
 	return &DAG{
 		Events: make(map[EventID]*Event),
 		Rounds: make(RoundTable),
-		Votes:  make(VoteRecord), // 👈 اینجا مقداردهی کن
+		Votes:  make(VoteRecord),
 	}
 }
 
-
 // AddEvent اضافه‌کردن یک رویداد به DAG
-func (d *DAG) AddEvent(e *event.Event) error {
+func (d *DAG) AddEvent(e *Event) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -34,23 +32,22 @@ func (d *DAG) AddEvent(e *event.Event) error {
 		return errors.New("event already exists")
 	}
 	d.Events[id] = e
+	d.AssignRound(e)
 	return nil
 }
 
-// GetEvent دریافت یک رویداد با ID
-func (d *DAG) GetEvent(id event.EventID) (*event.Event, bool) {
+func (d *DAG) GetEvent(id EventID) (*Event, bool) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	e, ok := d.Events[id]
 	return e, ok
 }
 
-// GetParents دریافت والدهای یک رویداد
-func (d *DAG) GetParents(e *event.Event) ([]*event.Event, error) {
+func (d *DAG) GetParents(e *Event) ([]*Event, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	parents := make([]*event.Event, 0, len(e.Parents))
+	parents := make([]*Event, 0, len(e.Parents))
 	for _, pid := range e.Parents {
 		parent, ok := d.Events[pid]
 		if !ok {
@@ -61,15 +58,14 @@ func (d *DAG) GetParents(e *event.Event) ([]*event.Event, error) {
 	return parents, nil
 }
 
-// IsAncestor بررسی اینکه a اجداد b هست یا نه
-func (d *DAG) IsAncestor(aID, bID event.EventID) bool {
+func (d *DAG) IsAncestor(aID, bID EventID) bool {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	visited := make(map[event.EventID]bool)
-	var dfs func(event.EventID) bool
+	visited := make(map[EventID]bool)
+	var dfs func(EventID) bool
 
-	dfs = func(current event.EventID) bool {
+	dfs = func(current EventID) bool {
 		if current == aID {
 			return true
 		}
@@ -90,4 +86,29 @@ func (d *DAG) IsAncestor(aID, bID event.EventID) bool {
 	}
 
 	return dfs(bID)
+}
+
+func (d *DAG) CreateAndAddEvent(creatorID string, parents []EventID, epoch, lamport uint64, txs types.Transactions) (*Event, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	height := uint64(0)
+	for _, pid := range parents {
+		if parent, ok := d.Events[pid]; ok {
+			if parent.Height > height {
+				height = parent.Height
+			}
+		}
+	}
+	height++
+
+	e := NewEvent(creatorID, parents, epoch, lamport, txs, height)
+	id := e.Hash()
+
+	if _, exists := d.Events[id]; exists {
+		return nil, errors.New("event already exists")
+	}
+	d.Events[id] = e
+	d.AssignRound(e)
+	return e, nil
 }

@@ -1,52 +1,40 @@
-package core
-
+// Lachesis Module 1: Event Handling
+package main
 
 import (
 	"crypto/ecdsa"
 	"fmt"
 	"sync/atomic"
-	
+
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/rlp"
 	"golang.org/x/crypto/sha3"
 )
-// Event Id is a 31-byte hash of the event
+
 type EventID [32]byte
 
-type transaction struct {
-	From   string
-	To     string
-	Amount uint64
-	Data   []byte
-	// And more ...
-}
-
-// EventHeader contains metadata of the event
 type EventHeader struct {
-	//ID            string
-	CreatorID     string    // ID or Address of the node
-	Parents       []EventID // references to parent events
-	Lamport       uint64    // Lamport timestamp (logical clock)
-	Epoch         uint64    // epoch number
-	ExtraData     []byte    // custom extra info
-	TxHash        [32]byte  // hash of transactions
+	CreatorID     string
+	Parents       []EventID
+	Lamport       uint64
+	Epoch         uint64
+	ExtraData     []byte
+	TxHash        [32]byte
 	TxCount       int
-	Round         uint64       // برای الگوریتم اجماع DAG
-	Frame         uint64       // (optional) برای دسته‌بندی منطقی
-	Height        uint64       // بیشینه‌ی (height والدها) + 1
-	RoundReceived uint64       // dar kodam round be ejmae reside?
-	IsFamous      *bool        // is famous ?
-	Atropos       EventID      // hash event nahaii ke ino taeed karde
-	AtroposTime   uint64       // zaman ejmae nahaii
-	MedianTime    uint64       // Average time of dag
-	hash          atomic.Value // cached hash
+	Round         uint64
+	Frame         uint64
+	Height        uint64
+	RoundReceived uint64
+	IsFamous      *bool
+	Atropos       EventID
+	AtroposTime   uint64
+	MedianTime    uint64
 	IsRoot        bool
-	IsClotho      bool // ✅ نشان می‌دهد این رویداد Clotho شده
-
+	IsClotho      bool
+	hash          atomic.Value
 }
 
-// Event is a full structure containing all necessary data for DAG
 type Event struct {
 	EventHeader
 	Transactions types.Transactions
@@ -62,20 +50,7 @@ type rlpEvent struct {
 	Payload      [][]byte
 }
 
-type DAG struct {
-	Events map[EventID]*Event
-}
-
-func NewEvent(creatorID string, parents []EventID, epoch uint64, lamport uint64, txs []transaction, dag *DAG) *Event {
-	height := uint64(0)
-	for _, parentID := range parents {
-		if parent, exists := dag.Events[parentID]; exists {
-			if parent.Height > height {
-				height = parent.Height
-			}
-		}
-	}
-	height += 1
+func NewEvent(creatorID string, parents []EventID, epoch, lamport uint64, txs types.Transactions, height uint64) *Event {
 	e := &Event{
 		EventHeader: EventHeader{
 			CreatorID: creatorID,
@@ -85,8 +60,9 @@ func NewEvent(creatorID string, parents []EventID, epoch uint64, lamport uint64,
 			TxCount:   len(txs),
 			Height:    height,
 		},
+		Transactions: txs,
 	}
-	e.EventHeader.TxHash = e.CalculateTxHash()
+	e.TxHash = e.CalculateTxHash()
 	return e
 }
 
@@ -94,36 +70,24 @@ func (e *Event) CalculateTxHash() [32]byte {
 	hasher := sha3.NewLegacyKeccak256()
 	txsBytes, err := rlp.EncodeToBytes(e.Transactions)
 	if err != nil {
-		panic(fmt.Errorf("Failed to encode transactions: %v", err))
+		panic(fmt.Errorf("tx encoding failed: %v", err))
 	}
 	hasher.Write(txsBytes)
-	var txHash [32]byte
-	copy(txHash[:], hasher.Sum(nil))
-	return txHash
+	var hash [32]byte
+	copy(hash[:], hasher.Sum(nil))
+	return hash
 }
 
 func (e *Event) Hash() EventID {
 	if h := e.hash.Load(); h != nil {
 		return h.(EventID)
 	}
-
 	var id EventID
+	headerBytes, _ := rlp.EncodeToBytes(e.EventHeader)
+	txsBytes, _ := rlp.EncodeToBytes(e.Transactions)
 	hasher := sha3.NewLegacyKeccak256()
-
-	// rlp with encoding header
-	headerBytes, err := rlp.EncodeToBytes(e.EventHeader)
-	if err != nil {
-		panic(fmt.Errorf("Failed to RLP encode header: %v", err))
-	}
 	hasher.Write(headerBytes)
-
-	// encoding transactions
-	txsBytes, err := rlp.EncodeToBytes(e.Transactions)
-	if err != nil {
-		panic(fmt.Errorf("Failed to RLP encode transactions: %v", err))
-	}
 	hasher.Write(txsBytes)
-
 	copy(id[:], hasher.Sum(nil))
 	e.hash.Store(id)
 	return id
@@ -135,7 +99,6 @@ func (e *Event) DataToSign() []byte {
 }
 
 func (e *Event) Sign(priv *ecdsa.PrivateKey) error {
-
 	data := crypto.Keccak256(e.DataToSign())
 	sig, err := crypto.Sign(data, priv)
 	if err != nil {
@@ -155,13 +118,13 @@ func (e *Event) VerifySignature(pub *ecdsa.PublicKey) bool {
 }
 
 func (e *Event) EncodeRLP() ([]byte, error) {
-	enc := rlpEvent{
+	re := rlpEvent{
 		Header:       e.EventHeader,
 		Transactions: e.Transactions,
 		Signature:    e.Signature,
 		Payload:      e.Payload,
 	}
-	return rlp.EncodeToBytes(enc)
+	return rlp.EncodeToBytes(re)
 }
 
 func DecodeRLP(data []byte) (*Event, error) {
@@ -170,7 +133,6 @@ func DecodeRLP(data []byte) (*Event, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	return &Event{
 		EventHeader:  dec.Header,
 		Transactions: dec.Transactions,
@@ -178,3 +140,5 @@ func DecodeRLP(data []byte) (*Event, error) {
 		Payload:      dec.Payload,
 	}, nil
 }
+
+// Note: This is only the first module. After you review it, I will continue to generate the next 8 modules (DAG, Round Assignment, Fame Voting, Clotho Selection, Atropos Finality, Time Consensus, Block Packaging, Serialization).
