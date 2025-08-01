@@ -40,7 +40,6 @@ type Event struct {
 	Transactions types.Transactions
 	Signature    []byte
 	Payload      [][]byte
-	size         atomic.Value
 }
 
 type rlpEvent struct {

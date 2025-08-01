@@ -112,3 +112,81 @@ func (d *DAG) CreateAndAddEvent(creatorID string, parents []EventID, epoch, lamp
 	d.AssignRound(e)
 	return e, nil
 }
+
+// AssignRound محاسبه‌ی round، witness بودن و root بودن برای یک event
+func (d *DAG) AssignRound(e *Event) {
+	parents, err := d.GetParents(e)
+	if err != nil {
+		return
+	}
+
+	// اگر هیچ پدر نداره، یعنی genesis
+	if len(parents) == 0 {
+		e.Round = 0
+		e.IsRoot = true
+		d.ensureRound(e.Round)
+		d.Rounds[e.Round].Witnesses[e.Hash()] = e
+		d.Rounds[e.Round].Roots[e.Hash()] = e
+		return
+	}
+
+	// حداکثر round والدها رو پیدا کن
+	maxParentRound := uint64(0)
+	for _, p := range parents {
+		if p.Round > maxParentRound {
+			maxParentRound = p.Round
+		}
+	}
+	e.Round = maxParentRound
+
+	// بررسی اینکه آیا همه والدها Root بودن → round++
+	allParentsAreRoot := true
+	for _, p := range parents {
+		if !p.IsRoot {
+			allParentsAreRoot = false
+			break
+		}
+	}
+	if allParentsAreRoot {
+		e.Round += 1
+	}
+
+	// بررسی Witness بودن
+	isWitness := d.isWitness(e)
+	if isWitness {
+		e.IsRoot = true
+		d.ensureRound(e.Round)
+		d.Rounds[e.Round].Witnesses[e.Hash()] = e
+		d.Rounds[e.Round].Roots[e.Hash()] = e
+	}
+}
+
+// isWitness بررسی اینکه آیا event یک witness است
+func (d *DAG) isWitness(e *Event) bool {
+	// اولین event از این creator در این round
+	first := true
+	for _, other := range d.Events {
+		if other.CreatorID == e.CreatorID &&
+			other.Round == e.Round &&
+			other.Lamport < e.Lamport {
+			first = false
+			break
+		}
+	}
+	return first
+}
+
+// ensureRound اطمینان از وجود round
+func (d *DAG) ensureRound(r uint64) {
+	if d.Rounds == nil {
+		d.Rounds = make(RoundTable)
+	}
+	if _, exists := d.Rounds[r]; !exists {
+		d.Rounds[r] = &RoundInfo{
+			Witnesses: make(map[EventID]*Event),
+			Roots:     make(map[EventID]*Event),
+			Clothos:   make(map[EventID]*Event),
+			Atropos:   make(map[EventID]*Event),
+		}
+	}
+}
