@@ -5,38 +5,187 @@ import (
 	"crypto/rand"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 )
 
 func main() {
-	// ساخت DAG جدید
-	dag := NewDAG()
+	fmt.Println("🚀 Starting Sinar Chain (Fantom-like Lachesis Consensus)...")
 
-	// کلید خصوصی و عمومی تولید کن
+	// تنظیمات Consensus
+	consensusConfig := &ConsensusConfig{
+		BlockTime:         2 * time.Second, // 2 ثانیه per block
+		MaxEventsPerBlock: 1000,
+		MinValidators:     21,
+		MaxValidators:     100,
+		StakeRequired:     1000000, // 1M tokens
+		ConsensusTimeout:  30 * time.Second,
+	}
+
+	// ایجاد Consensus Engine
+	consensusEngine := NewConsensusEngine(consensusConfig)
+
+	// ایجاد StateDB
+	stateDB := NewStateDB()
+
+	// ایجاد Network Manager
+	networkManager, err := NewNetworkManager(nil) // DAG will be set later
+	if err != nil {
+		log.Fatal("Failed to create network manager:", err)
+	}
+
+	// تنظیم network در consensus engine
+	consensusEngine.SetNetwork(networkManager)
+
+	// ایجاد API Server
+	apiServer := NewAPIServer(consensusEngine, networkManager, stateDB, "8080")
+
+	// شروع Consensus Engine
+	if err := consensusEngine.Start(); err != nil {
+		log.Fatal("Failed to start consensus engine:", err)
+	}
+
+	// شروع Network
+	if err := networkManager.Start(); err != nil {
+		log.Fatal("Failed to start network:", err)
+	}
+
+	// شروع API Server در goroutine جداگانه
+	go func() {
+		if err := apiServer.Start(); err != nil {
+			log.Printf("API Server error: %v", err)
+		}
+	}()
+
+	// تولید کلید برای validator اصلی
 	privKey, _ := ecdsa.GenerateKey(crypto.S256(), rand.Reader)
-	pubKey := &privKey.PublicKey
+	validator := NewValidator("NodeA", privKey, 1000000)
 
-	// رویداد genesis (بدون والد)
-	event1, err := dag.CreateAndAddEvent("NodeA", nil, 0, 1, types.Transactions{})
-	if err != nil {
-		log.Fatal(err)
+	// اضافه کردن validator به consensus engine
+	if err := consensusEngine.AddValidator(validator); err != nil {
+		log.Fatal("Failed to add validator:", err)
 	}
-	event1.Sign(privKey)
 
-	// رویداد دوم که والدش event1 هست
-	event2, err := dag.CreateAndAddEvent("NodeB", []EventID{event1.Hash()}, 0, 2, types.Transactions{})
+	// ایجاد events نمونه
+	createSampleEvents(consensusEngine, privKey)
+
+	// نمایش اطلاعات شبکه
+	displayNetworkInfo(consensusEngine, networkManager)
+
+	// نگه داشتن برنامه برای مدتی
+	fmt.Println("\n⏳ Running Sinar Chain for 60 seconds...")
+	time.Sleep(60 * time.Second)
+
+	// توقف شبکه
+	networkManager.Stop()
+	consensusEngine.Stop()
+	fmt.Println("🛑 Sinar Chain stopped.")
+}
+
+// createSampleEvents ایجاد events نمونه
+func createSampleEvents(engine *ConsensusEngine, privKey *ecdsa.PrivateKey) {
+	fmt.Println("📝 Creating sample events...")
+
+	// Event اول (Genesis)
+	event1, err := createEvent("NodeA", nil, 0, 1, nil, privKey)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create event1: %v", err)
+		return
 	}
-	event2.Sign(privKey)
 
-	// نمایش خروجی
-	fmt.Println("Event1 Hash:", event1.Hash())
-	fmt.Println("Event2 Hash:", event2.Hash())
+	// Event دوم
+	event2, err := createEvent("NodeA", []EventID{event1.Hash()}, 0, 2, nil, privKey)
+	if err != nil {
+		log.Printf("Failed to create event2: %v", err)
+		return
+	}
 
-	// بررسی امضای دیجیتال
-	fmt.Println("Event1 Valid Signature:", event1.VerifySignature(pubKey))
-	fmt.Println("Event2 Valid Signature:", event2.VerifySignature(pubKey))
+	// Event سوم
+	event3, err := createEvent("NodeA", []EventID{event1.Hash(), event2.Hash()}, 0, 3, nil, privKey)
+	if err != nil {
+		log.Printf("Failed to create event3: %v", err)
+		return
+	}
+
+	// اضافه کردن events به consensus engine
+	engine.AddEvent(event1)
+	engine.AddEvent(event2)
+	engine.AddEvent(event3)
+
+	fmt.Printf("✅ Created %d sample events\n", 3)
+}
+
+// createEvent ایجاد event جدید
+func createEvent(creatorID string, parents []EventID, epoch, lamport uint64, txs types.Transactions, privKey *ecdsa.PrivateKey) (*Event, error) {
+	event := NewEvent(creatorID, parents, epoch, lamport, txs, 0)
+
+	// امضای event
+	if err := event.Sign(privKey); err != nil {
+		return nil, fmt.Errorf("failed to sign event: %v", err)
+	}
+
+	return event, nil
+}
+
+// displayNetworkInfo نمایش اطلاعات شبکه
+func displayNetworkInfo(engine *ConsensusEngine, network *NetworkManager) {
+	fmt.Println("\n📊 Network Information:")
+
+	// اطلاعات Poset
+	poset := engine.GetPoset()
+	if poset != nil {
+		fmt.Printf("Total Events: %d\n", len(poset.Events))
+		fmt.Printf("Latest Round: %d\n", poset.LastRound)
+		fmt.Printf("Latest Frame: %d\n", poset.LastFrame)
+	}
+
+	// اطلاعات Validators
+	validators := engine.GetValidators()
+	fmt.Printf("Active Validators: %d\n", len(validators))
+
+	// اطلاعات Network
+	peers := network.GetPeers()
+	fmt.Printf("Connected Peers: %d\n", len(peers))
+
+	// اطلاعات آخرین بلاک
+	latestBlock := engine.GetLatestBlock()
+	if latestBlock != nil {
+		fmt.Printf("Latest Block: #%d\n", latestBlock.Header.Number)
+		fmt.Printf("Block Hash: %s\n", latestBlock.Hash().Hex())
+	} else {
+		fmt.Println("No blocks created yet")
+	}
+}
+
+// displayConsensusInfo نمایش اطلاعات consensus
+func displayConsensusInfo(engine *ConsensusEngine) {
+	fmt.Println("\n🔄 Consensus Information:")
+
+	poset := engine.GetPoset()
+	if poset == nil {
+		fmt.Println("Poset not available")
+		return
+	}
+
+	// نمایش rounds
+	for round := uint64(0); round <= poset.LastRound; round++ {
+		if roundInfo, exists := poset.GetRoundInfo(round); exists {
+			fmt.Printf("Round %d: %d witnesses, %d roots, %d clothos, %d atropos\n",
+				round,
+				len(roundInfo.Witnesses),
+				len(roundInfo.Roots),
+				len(roundInfo.Clothos),
+				len(roundInfo.Atropos))
+		}
+	}
+
+	// نمایش latest events
+	latestEvents := poset.GetLatestEvents()
+	fmt.Printf("Latest Events: %d\n", len(latestEvents))
+	for creatorID, event := range latestEvents {
+		hash := event.Hash()
+		fmt.Printf("  %s: %x\n", creatorID, hash[:8])
+	}
 }
