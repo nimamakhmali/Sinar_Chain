@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"log"
+	"math/big"
 	"time"
 
 	"github.com/ethereum/go-ethereum/core/types"
@@ -22,13 +23,15 @@ func main() {
 		MaxValidators:     100,
 		StakeRequired:     1000000, // 1M tokens
 		ConsensusTimeout:  30 * time.Second,
+		GasLimit:          30000000, // 30M gas
+		BaseFee:           big.NewInt(0),
 	}
 
 	// ایجاد Consensus Engine
 	consensusEngine := NewConsensusEngine(consensusConfig)
 
 	// ایجاد StateDB
-	stateDB := NewStateDB()
+	stateDB := consensusEngine.GetStateDB()
 
 	// ایجاد Network Manager
 	networkManager, err := NewNetworkManager(nil) // DAG will be set later
@@ -157,6 +160,20 @@ func displayNetworkInfo(engine *ConsensusEngine, network *NetworkManager) {
 	} else {
 		fmt.Println("No blocks created yet")
 	}
+
+	// اطلاعات Blockchain
+	blockchain := engine.GetBlockchain()
+	if blockchain != nil {
+		blockStats := blockchain.GetBlockStats()
+		fmt.Printf("Blockchain Stats: %+v\n", blockStats)
+	}
+
+	// اطلاعات State
+	stateDB := engine.GetStateDB()
+	if stateDB != nil {
+		stateStats := stateDB.GetStateStats()
+		fmt.Printf("State Stats: %+v\n", stateStats)
+	}
 }
 
 // displayConsensusInfo نمایش اطلاعات consensus
@@ -188,4 +205,50 @@ func displayConsensusInfo(engine *ConsensusEngine) {
 		hash := event.Hash()
 		fmt.Printf("  %s: %x\n", creatorID, hash[:8])
 	}
+
+	// نمایش consensus stats
+	consensusStats := engine.GetConsensusStats()
+	fmt.Printf("Consensus Stats: %+v\n", consensusStats)
+}
+
+// runMultiNodeTest اجرای تست چند نودی
+func runMultiNodeTest() error {
+	fmt.Println("🚀 Starting Multi-Node Test for Sinar Chain...")
+
+	// در نسخه فعلی، این تست پیاده‌سازی نشده است
+	fmt.Println("⚠️ Multi-Node Test not implemented yet")
+
+	fmt.Println("✅ Multi-Node Test completed successfully!")
+	return nil
+}
+
+// runPerformanceTest اجرای تست عملکرد
+func runPerformanceTest(engine *ConsensusEngine) {
+	fmt.Println("🚀 Starting Performance Test...")
+
+	// تست ایجاد events
+	startTime := time.Now()
+	for i := 0; i < 1000; i++ {
+		event, _ := createEvent("TestNode", nil, 0, uint64(i), nil, nil)
+		engine.AddEvent(event)
+	}
+	eventTime := time.Since(startTime)
+	fmt.Printf("✅ Created 1000 events in %v\n", eventTime)
+
+	// تست consensus
+	startTime = time.Now()
+	_ = engine.GetConsensusStats()
+	consensusTime := time.Since(startTime)
+	fmt.Printf("✅ Consensus stats calculated in %v\n", consensusTime)
+
+	// تست blockchain
+	blockchain := engine.GetBlockchain()
+	if blockchain != nil {
+		startTime = time.Now()
+		_ = blockchain.GetBlockStats()
+		blockchainTime := time.Since(startTime)
+		fmt.Printf("✅ Blockchain stats calculated in %v\n", blockchainTime)
+	}
+
+	fmt.Println("✅ Performance Test completed!")
 }

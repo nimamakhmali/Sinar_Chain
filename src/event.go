@@ -140,4 +140,32 @@ func DecodeRLP(data []byte) (*Event, error) {
 	}, nil
 }
 
+// Reset بازنشانی event برای استفاده مجدد در pool
+func (e *Event) Reset() {
+	// پاک کردن تمام فیلدها
+	e.CreatorID = ""
+	e.Parents = nil
+	e.Lamport = 0
+	e.Epoch = 0
+	e.ExtraData = nil
+	e.TxHash = [32]byte{}
+	e.TxCount = 0
+	e.Round = 0
+	e.Frame = 0
+	e.Height = 0
+	e.RoundReceived = 0
+	e.IsFamous = nil
+	e.Atropos = EventID{}
+	e.AtroposTime = 0
+	e.MedianTime = 0
+	e.IsRoot = false
+	e.IsClotho = false
+	e.Transactions = nil
+	e.Signature = nil
+	e.Payload = nil
+
+	// پاک کردن hash cache
+	e.hash.Store(EventID{})
+}
+
 // Note: This is only the first module. After you review it, I will continue to generate the next 8 modules (DAG, Round Assignment, Fame Voting, Clotho Selection, Atropos Finality, Time Consensus, Block Packaging, Serialization).

@@ -1,18 +1,46 @@
 package main
 
 import (
+	"math/big"
 	"sort"
+	"sync"
+	"time"
 )
 
 // FinalityEngine مسئول نهایی‌سازی events و تبدیل Clothos به Atropos
 type FinalityEngine struct {
-	dag *DAG
+	dag            *DAG
+	clothoSelector *ClothoSelector
+	fameVoting     *FameVoting
+	cacheManager   *CacheManager
+	mu             sync.RWMutex
+}
+
+// FinalityInfo اطلاعات نهائی‌سازی
+type FinalityInfo struct {
+	EventID          EventID
+	Round            uint64
+	AtroposTime      uint64
+	MedianTime       uint64
+	IsFinalized      bool
+	FinalizationTime time.Time
+}
+
+// TimeConsensus اطلاعات اجماع زمانی
+type TimeConsensus struct {
+	EventID          EventID
+	WitnessTimes     []uint64
+	MedianTime       uint64
+	ConsensusReached bool
 }
 
 // NewFinalityEngine ایجاد FinalityEngine جدید
 func NewFinalityEngine(dag *DAG) *FinalityEngine {
 	return &FinalityEngine{
-		dag: dag,
+		dag:            dag,
+		clothoSelector: NewClothoSelector(dag),
+		fameVoting:     NewFameVoting(dag),
+		cacheManager:   NewCacheManager(1000),
 	}
 }
 
@@ -52,7 +80,12 @@ func (fe *FinalityEngine) canBecomeAtropos(clotho *Event, round uint64) bool {
 		return false
 	}
 
-	// شرط 2: باید اکثریت famous witnesses از round+2 آن را ببینند
+	// شرط 2: باید famous باشد
+	if clotho.IsFamous == nil || !*clotho.IsFamous {
+		return false
+	}
+
+	// شرط 3: باید اکثریت famous witnesses از round+2 آن را ببینند
 	nextRound := round + 2
 	famousWitnessesNextRound := fe.getFamousWitnesses(nextRound)
 	if len(famousWitnessesNextRound) == 0 {
@@ -61,14 +94,16 @@ func (fe *FinalityEngine) canBecomeAtropos(clotho *Event, round uint64) bool {
 
 	// شمارش famous witnesses که این Clotho را می‌بینند
 	seeCount := 0
+	totalFamousWitnesses := len(famousWitnessesNextRound)
+
 	for _, witness := range famousWitnessesNextRound {
 		if fe.dag.IsAncestor(clotho.Hash(), witness.Hash()) {
 			seeCount++
 		}
 	}
 
-	// باید اکثریت (2/3) آن را ببینند
-	requiredCount := (2 * len(famousWitnessesNextRound)) / 3
+	// باید اکثریت (2/3) آن را ببینند (Byzantine fault tolerance)
+	requiredCount := (2 * totalFamousWitnesses) / 3
 	return seeCount > requiredCount
 }
 
@@ -88,6 +123,9 @@ func (fe *FinalityEngine) convertToAtropos(clotho *Event, round uint64) {
 	// اضافه کردن به round info
 	fe.ensureRound(round + 2)
 	fe.dag.Rounds[round+2].Atropos[clotho.Hash()] = clotho
+
+	// ثبت زمان نهائی‌سازی
+	clotho.AtroposTime = uint64(time.Now().UnixNano() / 1000000) // milliseconds
 }
 
 // calculateAtroposTime محاسبه زمان‌های Atropos
@@ -129,6 +167,18 @@ func (fe *FinalityEngine) median(values []uint64) uint64 {
 
 // getClothos دریافت Clothos یک round
 func (fe *FinalityEngine) getClothos(round uint64) []*Event {
+	fe.mu.RLock()
+	defer fe.mu.RUnlock()
+
+	// بررسی cache manager
+	if cachedData, exists := fe.cacheManager.GetConsensusCache(round); exists {
+		if clothosData, ok := cachedData["clothos"]; ok {
+			if clothos, ok := clothosData.([]*Event); ok {
+				return clothos
+			}
+		}
+	}
+
 	roundInfo, exists := fe.dag.Rounds[round]
 	if !exists {
 		return nil
@@ -139,11 +189,29 @@ func (fe *FinalityEngine) getClothos(round uint64) []*Event {
 		clothos = append(clothos, clotho)
 	}
 
+	// ذخیره در cache manager
+	cacheData := map[string]interface{}{
+		"clothos": clothos,
+	}
+	fe.cacheManager.SetConsensusCache(round, cacheData)
+
 	return clothos
 }
 
 // getFamousWitnesses دریافت famous witnesses یک round
 func (fe *FinalityEngine) getFamousWitnesses(round uint64) []*Event {
+	fe.mu.RLock()
+	defer fe.mu.RUnlock()
+
+	// بررسی cache manager
+	if cachedData, exists := fe.cacheManager.GetConsensusCache(round); exists {
+		if witnessesData, ok := cachedData["famous_witnesses"]; ok {
+			if witnesses, ok := witnessesData.([]*Event); ok {
+				return witnesses
+			}
+		}
+	}
+
 	roundInfo, exists := fe.dag.Rounds[round]
 	if !exists {
 		return nil
@@ -155,6 +223,12 @@ func (fe *FinalityEngine) getFamousWitnesses(round uint64) []*Event {
 			famousWitnesses = append(famousWitnesses, witness)
 		}
 	}
+
+	// ذخیره در cache manager
+	cacheData := map[string]interface{}{
+		"famous_witnesses": famousWitnesses,
+	}
+	fe.cacheManager.SetConsensusCache(round, cacheData)
 
 	return famousWitnesses
 }
@@ -226,25 +300,205 @@ func (fe *FinalityEngine) GetFinalizedEventsInRange(fromTime, toTime uint64) []*
 	return events
 }
 
-// GetFinalityStats آمار نهایی‌سازی
+// GetFinalizedEventsByStake دریافت events نهایی شده بر اساس stake
+func (fe *FinalityEngine) GetFinalizedEventsByStake(minStake *big.Int) []*Event {
+	var events []*Event
+
+	for _, event := range fe.dag.Events {
+		if event.Atropos != (EventID{}) {
+			// در نسخه کامل، stake از validator set گرفته می‌شود
+			stake := big.NewInt(1000000) // 1M tokens default
+			if stake.Cmp(minStake) >= 0 {
+				events = append(events, event)
+			}
+		}
+	}
+
+	return events
+}
+
+// GetFinalizedEventsByCreator دریافت events نهایی شده یک creator
+func (fe *FinalityEngine) GetFinalizedEventsByCreator(creatorID string) []*Event {
+	var events []*Event
+
+	for _, event := range fe.dag.Events {
+		if event.Atropos != (EventID{}) && event.CreatorID == creatorID {
+			events = append(events, event)
+		}
+	}
+
+	return events
+}
+
+// ValidateFinality اعتبارسنجی نهائی‌سازی
+func (fe *FinalityEngine) ValidateFinality(event *Event, round uint64) bool {
+	// بررسی شرایط اعتبارسنجی
+	if event.Atropos == (EventID{}) {
+		return false
+	}
+
+	// بررسی Clotho بودن
+	if !event.IsClotho {
+		return false
+	}
+
+	// بررسی famous بودن
+	if event.IsFamous == nil || !*event.IsFamous {
+		return false
+	}
+
+	// بررسی round assignment
+	if event.RoundReceived != round+2 {
+		return false
+	}
+
+	// بررسی visibility conditions
+	nextRound := round + 2
+	famousWitnessesNextRound := fe.getFamousWitnesses(nextRound)
+	seeCount := 0
+
+	for _, witness := range famousWitnessesNextRound {
+		if fe.dag.IsAncestor(event.Hash(), witness.Hash()) {
+			seeCount++
+		}
+	}
+
+	requiredCount := (2 * len(famousWitnessesNextRound)) / 3
+	return seeCount > requiredCount
+}
+
+// GetTimeConsensus محاسبه اجماع زمانی
+func (fe *FinalityEngine) GetTimeConsensus(event *Event) *TimeConsensus {
+	var witnessTimes []uint64
+
+	// جمع‌آوری زمان‌های شاهدان
+	for _, otherEvent := range fe.dag.Events {
+		if otherEvent.IsFamous != nil && *otherEvent.IsFamous {
+			if fe.dag.IsAncestor(event.Hash(), otherEvent.Hash()) {
+				witnessTimes = append(witnessTimes, otherEvent.Lamport)
+			}
+		}
+	}
+
+	medianTime := fe.median(witnessTimes)
+	consensusReached := len(witnessTimes) > 0
+
+	return &TimeConsensus{
+		EventID:          event.Hash(),
+		WitnessTimes:     witnessTimes,
+		MedianTime:       medianTime,
+		ConsensusReached: consensusReached,
+	}
+}
+
+// GetFinalityStats آمار نهائی‌سازی
 func (fe *FinalityEngine) GetFinalityStats() map[string]interface{} {
 	stats := make(map[string]interface{})
 
 	totalFinalized := 0
 	finalizedByRound := make(map[uint64]int)
 	finalizedByCreator := make(map[string]int)
+	finalizedByTime := make(map[uint64]int)
 
 	for _, event := range fe.dag.Events {
 		if event.Atropos != (EventID{}) {
 			totalFinalized++
 			finalizedByRound[event.RoundReceived]++
 			finalizedByCreator[event.CreatorID]++
+			finalizedByTime[event.AtroposTime]++
 		}
 	}
 
 	stats["total_finalized"] = totalFinalized
 	stats["finalized_by_round"] = finalizedByRound
 	stats["finalized_by_creator"] = finalizedByCreator
+	stats["finalized_by_time"] = finalizedByTime
+
+	// محاسبه آمار اضافی
+	if totalFinalized > 0 {
+		stats["avg_finalized_per_round"] = float64(totalFinalized) / float64(len(finalizedByRound))
+		stats["avg_finalized_per_creator"] = float64(totalFinalized) / float64(len(finalizedByCreator))
+	} else {
+		stats["avg_finalized_per_round"] = 0.0
+		stats["avg_finalized_per_creator"] = 0.0
+	}
+
+	// آمار cache
+	if fe.cacheManager != nil {
+		cacheStats := fe.cacheManager.GetCacheStats()
+		for key, value := range cacheStats {
+			stats["cache_"+key] = value
+		}
+	}
 
 	return stats
+}
+
+// GetFinalityByVisibility دریافت نهائی‌سازی بر اساس visibility
+func (fe *FinalityEngine) GetFinalityByVisibility(minVisibility int) []*Event {
+	var events []*Event
+
+	for _, event := range fe.dag.Events {
+		if event.Atropos != (EventID{}) {
+			// محاسبه visibility
+			visibility := fe.calculateVisibility(event)
+			if visibility >= minVisibility {
+				events = append(events, event)
+			}
+		}
+	}
+
+	return events
+}
+
+// calculateVisibility محاسبه visibility یک event
+func (fe *FinalityEngine) calculateVisibility(event *Event) int {
+	visibility := 0
+
+	for _, otherEvent := range fe.dag.Events {
+		if fe.dag.IsAncestor(event.Hash(), otherEvent.Hash()) {
+			visibility++
+		}
+	}
+
+	return visibility
+}
+
+// GetFinalityByConsensus دریافت نهائی‌سازی بر اساس شرایط اجماع
+func (fe *FinalityEngine) GetFinalityByConsensus(consensusThreshold float64) []*Event {
+	var events []*Event
+
+	for _, event := range fe.dag.Events {
+		if event.Atropos != (EventID{}) {
+			// محاسبه consensus ratio
+			consensusRatio := fe.calculateConsensusRatio(event)
+			if consensusRatio >= consensusThreshold {
+				events = append(events, event)
+			}
+		}
+	}
+
+	return events
+}
+
+// calculateConsensusRatio محاسبه نسبت اجماع
+func (fe *FinalityEngine) calculateConsensusRatio(event *Event) float64 {
+	totalWitnesses := 0
+	agreeingWitnesses := 0
+
+	// شمارش شاهدان موافق
+	for _, otherEvent := range fe.dag.Events {
+		if otherEvent.IsFamous != nil && *otherEvent.IsFamous {
+			totalWitnesses++
+			if fe.dag.IsAncestor(event.Hash(), otherEvent.Hash()) {
+				agreeingWitnesses++
+			}
+		}
+	}
+
+	if totalWitnesses == 0 {
+		return 0.0
+	}
+
+	return float64(agreeingWitnesses) / float64(totalWitnesses)
 }

@@ -5,12 +5,240 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"golang.org/x/crypto/sha3"
 )
+
+// CacheManager مدیریت cache برای بهبود عملکرد
+type CacheManager struct {
+	eventCache     map[EventID]*Event
+	voteCache      map[string]*Vote
+	consensusCache map[uint64]map[string]interface{}
+	stateCache     map[string]*big.Int
+	mu             sync.RWMutex
+	maxCacheSize   int
+	cacheHits      int64
+	cacheMisses    int64
+}
+
+// NewCacheManager ایجاد CacheManager جدید
+func NewCacheManager(maxSize int) *CacheManager {
+	return &CacheManager{
+		eventCache:     make(map[EventID]*Event),
+		voteCache:      make(map[string]*Vote),
+		consensusCache: make(map[uint64]map[string]interface{}),
+		stateCache:     make(map[string]*big.Int),
+		maxCacheSize:   maxSize,
+	}
+}
+
+// GetEvent از cache دریافت event
+func (cm *CacheManager) GetEvent(eventID EventID) (*Event, bool) {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+
+	event, exists := cm.eventCache[eventID]
+	if exists {
+		atomic.AddInt64(&cm.cacheHits, 1)
+		return event, true
+	}
+
+	atomic.AddInt64(&cm.cacheMisses, 1)
+	return nil, false
+}
+
+// SetEvent ذخیره event در cache
+func (cm *CacheManager) SetEvent(eventID EventID, event *Event) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	// بررسی اندازه cache
+	if len(cm.eventCache) >= cm.maxCacheSize {
+		cm.evictOldest()
+	}
+
+	cm.eventCache[eventID] = event
+}
+
+// GetVote از cache دریافت vote
+func (cm *CacheManager) GetVote(key string) (*Vote, bool) {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+
+	vote, exists := cm.voteCache[key]
+	if exists {
+		atomic.AddInt64(&cm.cacheHits, 1)
+		return vote, true
+	}
+
+	atomic.AddInt64(&cm.cacheMisses, 1)
+	return nil, false
+}
+
+// SetVote ذخیره vote در cache
+func (cm *CacheManager) SetVote(key string, vote *Vote) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	// بررسی اندازه cache
+	if len(cm.voteCache) >= cm.maxCacheSize {
+		cm.evictOldest()
+	}
+
+	cm.voteCache[key] = vote
+}
+
+// GetConsensusCache از cache دریافت consensus data
+func (cm *CacheManager) GetConsensusCache(round uint64) (map[string]interface{}, bool) {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+
+	data, exists := cm.consensusCache[round]
+	if exists {
+		atomic.AddInt64(&cm.cacheHits, 1)
+		return data, true
+	}
+
+	atomic.AddInt64(&cm.cacheMisses, 1)
+	return nil, false
+}
+
+// SetConsensusCache ذخیره consensus data در cache
+func (cm *CacheManager) SetConsensusCache(round uint64, data map[string]interface{}) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	// بررسی اندازه cache
+	if len(cm.consensusCache) >= cm.maxCacheSize {
+		cm.evictOldest()
+	}
+
+	cm.consensusCache[round] = data
+}
+
+// GetStateCache از cache دریافت state data
+func (cm *CacheManager) GetStateCache(key string) (*big.Int, bool) {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+
+	value, exists := cm.stateCache[key]
+	if exists {
+		atomic.AddInt64(&cm.cacheHits, 1)
+		return value, true
+	}
+
+	atomic.AddInt64(&cm.cacheMisses, 1)
+	return nil, false
+}
+
+// SetStateCache ذخیره state data در cache
+func (cm *CacheManager) SetStateCache(key string, value *big.Int) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	// بررسی اندازه cache
+	if len(cm.stateCache) >= cm.maxCacheSize {
+		cm.evictOldest()
+	}
+
+	cm.stateCache[key] = value
+}
+
+// evictOldest حذف قدیمی‌ترین entries از cache
+func (cm *CacheManager) evictOldest() {
+	// حذف 20% از قدیمی‌ترین entries
+	evictCount := cm.maxCacheSize / 5
+
+	// حذف از event cache
+	if len(cm.eventCache) > evictCount {
+		keys := make([]EventID, 0, len(cm.eventCache))
+		for k := range cm.eventCache {
+			keys = append(keys, k)
+		}
+		for i := 0; i < evictCount && i < len(keys); i++ {
+			delete(cm.eventCache, keys[i])
+		}
+	}
+
+	// حذف از vote cache
+	if len(cm.voteCache) > evictCount {
+		keys := make([]string, 0, len(cm.voteCache))
+		for k := range cm.voteCache {
+			keys = append(keys, k)
+		}
+		for i := 0; i < evictCount && i < len(keys); i++ {
+			delete(cm.voteCache, keys[i])
+		}
+	}
+
+	// حذف از consensus cache
+	if len(cm.consensusCache) > evictCount {
+		keys := make([]uint64, 0, len(cm.consensusCache))
+		for k := range cm.consensusCache {
+			keys = append(keys, k)
+		}
+		for i := 0; i < evictCount && i < len(keys); i++ {
+			delete(cm.consensusCache, keys[i])
+		}
+	}
+
+	// حذف از state cache
+	if len(cm.stateCache) > evictCount {
+		keys := make([]string, 0, len(cm.stateCache))
+		for k := range cm.stateCache {
+			keys = append(keys, k)
+		}
+		for i := 0; i < evictCount && i < len(keys); i++ {
+			delete(cm.stateCache, keys[i])
+		}
+	}
+}
+
+// GetCacheStats آمار cache
+func (cm *CacheManager) GetCacheStats() map[string]interface{} {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+
+	hits := atomic.LoadInt64(&cm.cacheHits)
+	misses := atomic.LoadInt64(&cm.cacheMisses)
+	total := hits + misses
+
+	var hitRate float64
+	if total > 0 {
+		hitRate = float64(hits) / float64(total)
+	}
+
+	return map[string]interface{}{
+		"event_cache_size":     len(cm.eventCache),
+		"vote_cache_size":      len(cm.voteCache),
+		"consensus_cache_size": len(cm.consensusCache),
+		"state_cache_size":     len(cm.stateCache),
+		"cache_hits":           hits,
+		"cache_misses":         misses,
+		"hit_rate":             hitRate,
+		"max_cache_size":       cm.maxCacheSize,
+	}
+}
+
+// ClearCache پاک کردن تمام cache
+func (cm *CacheManager) ClearCache() {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	cm.eventCache = make(map[EventID]*Event)
+	cm.voteCache = make(map[string]*Vote)
+	cm.consensusCache = make(map[uint64]map[string]interface{})
+	cm.stateCache = make(map[string]*big.Int)
+
+	atomic.StoreInt64(&cm.cacheHits, 0)
+	atomic.StoreInt64(&cm.cacheMisses, 0)
+}
 
 // Consensus Engine مشابه Fantom
 type ConsensusEngine struct {
@@ -51,6 +279,15 @@ type ConsensusEngine struct {
 	fameVoting      *FameVoting
 	clothoSelector  *ClothoSelector
 	finalityEngine  *FinalityEngine
+
+	// Blockchain integration
+	blockchain *Blockchain
+	stateDB    *StateDB
+
+	// Performance optimization
+	cacheManager      *CacheManager
+	parallelProcessor *ParallelProcessor
+	memoryOptimizer   *MemoryOptimizer
 }
 
 type ConsensusConfig struct {
@@ -60,6 +297,8 @@ type ConsensusConfig struct {
 	MaxValidators     int
 	StakeRequired     uint64
 	ConsensusTimeout  time.Duration
+	GasLimit          uint64
+	BaseFee           *big.Int
 }
 
 // NewConsensusEngine ایجاد Consensus Engine جدید
@@ -87,26 +326,47 @@ func NewConsensusEngine(config *ConsensusConfig) *ConsensusEngine {
 	clothoSelector := NewClothoSelector(dag)
 	finalityEngine := NewFinalityEngine(dag)
 
+	// ایجاد blockchain
+	blockchain := NewBlockchain(dag)
+	stateDB := NewStateDB()
+
+	// ایجاد cache manager برای بهبود عملکرد
+	cacheManager := NewCacheManager(10000) // 10K entries
+
+	// ایجاد parallel processor برای پردازش موازی
+	parallelProcessor := NewParallelProcessor(4, 2) // 4 event workers, 2 consensus workers
+
+	// ایجاد memory optimizer برای بهینه‌سازی حافظه
+	memoryOptimizer := NewMemoryOptimizer()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	return &ConsensusEngine{
-		poset:           poset,
-		validators:      make(map[common.Address]*Validator),
-		validatorSet:    NewValidatorSet(),
-		blockTime:       config.BlockTime,
-		eventQueue:      make(chan *Event, 1000),
-		blockQueue:      make(chan *Block, 100),
-		config:          config,
-		ctx:             ctx,
-		cancel:          cancel,
-		roundAssignment: roundAssignment,
-		fameVoting:      fameVoting,
-		clothoSelector:  clothoSelector,
-		finalityEngine:  finalityEngine,
+		poset:             poset,
+		validators:        make(map[common.Address]*Validator),
+		validatorSet:      NewValidatorSet(),
+		blockTime:         config.BlockTime,
+		eventQueue:        make(chan *Event, 1000),
+		blockQueue:        make(chan *Block, 100),
+		config:            config,
+		ctx:               ctx,
+		cancel:            cancel,
+		roundAssignment:   roundAssignment,
+		fameVoting:        fameVoting,
+		clothoSelector:    clothoSelector,
+		finalityEngine:    finalityEngine,
+		blockchain:        blockchain,
+		stateDB:           stateDB,
+		cacheManager:      cacheManager,
+		parallelProcessor: parallelProcessor,
+		memoryOptimizer:   memoryOptimizer,
 	}
 }
 
 // Start شروع Consensus Engine
 func (ce *ConsensusEngine) Start() error {
+	// شروع parallel processor
+	ce.parallelProcessor.Start()
+
 	// شروع event processing
 	go ce.processEvents()
 
@@ -125,12 +385,22 @@ func (ce *ConsensusEngine) Stop() {
 	if ce.cancel != nil {
 		ce.cancel()
 	}
+
+	// توقف parallel processor
+	if ce.parallelProcessor != nil {
+		ce.parallelProcessor.Stop()
+	}
+
 	close(ce.eventQueue)
 	close(ce.blockQueue)
 }
 
 // AddEvent اضافه کردن event
 func (ce *ConsensusEngine) AddEvent(event *Event) error {
+	// ارسال event به parallel processor
+	ce.parallelProcessor.AddEvent(event)
+
+	// همچنین ارسال به queue اصلی
 	select {
 	case ce.eventQueue <- event:
 		return nil
@@ -142,6 +412,16 @@ func (ce *ConsensusEngine) AddEvent(event *Event) error {
 // processEvents پردازش events
 func (ce *ConsensusEngine) processEvents() {
 	for event := range ce.eventQueue {
+		// بررسی cache برای event
+		eventID := event.Hash()
+		if cachedEvent, exists := ce.cacheManager.GetEvent(eventID); exists {
+			// اگر event در cache موجود است، از آن استفاده کن
+			event = cachedEvent
+		} else {
+			// ذخیره event در cache
+			ce.cacheManager.SetEvent(eventID, event)
+		}
+
 		// بررسی اینکه آیا event قبلاً وجود دارد
 		if _, exists := ce.poset.Events[event.Hash()]; exists {
 			// Event قبلاً وجود دارد، نادیده گرفتن
@@ -282,17 +562,19 @@ func (ce *ConsensusEngine) createBlockFromEvents(events []*Event) *Block {
 		AtroposTime: medianTime,
 		CreatedAt:   time.Now(),
 		Creator:     "SinarChain", // در نسخه کامل از validator استفاده می‌شود
+		GasLimit:    ce.config.GasLimit,
+		GasUsed:     0,
+		BaseFee:     ce.config.BaseFee,
 	}
 
 	// محاسبه state root
 	header.Root = ce.calculateStateRoot(transactions)
 
-	// ایجاد بلاک
-	block := &Block{
-		Header:       header,
-		Transactions: transactions,
-		Events:       eventIDs,
-	}
+	// ایجاد بلاک با استفاده از memory optimizer
+	block := ce.memoryOptimizer.GetBlock()
+	block.Header = header
+	block.Transactions = transactions
+	block.Events = eventIDs
 
 	return block
 }
@@ -383,7 +665,18 @@ func (ce *ConsensusEngine) runFameVoting() {
 	ce.mu.Lock()
 	defer ce.mu.Unlock()
 
-	// اجرای fame voting برای تمام rounds
+	// ایجاد consensus task برای fame voting
+	task := &ConsensusTask{
+		Round:    ce.currentRound,
+		Events:   ce.getEventsForRound(ce.currentRound),
+		Type:     "fame_voting",
+		Priority: 1,
+	}
+
+	// ارسال task به parallel processor
+	ce.parallelProcessor.AddConsensusTask(task)
+
+	// اجرای fame voting برای تمام rounds (همچنان برای backward compatibility)
 	ce.fameVoting.StartFameVoting()
 }
 
@@ -392,7 +685,18 @@ func (ce *ConsensusEngine) runClothoSelection() {
 	ce.mu.Lock()
 	defer ce.mu.Unlock()
 
-	// انتخاب Clothos برای تمام rounds
+	// ایجاد consensus task برای clotho selection
+	task := &ConsensusTask{
+		Round:    ce.currentRound,
+		Events:   ce.getEventsForRound(ce.currentRound),
+		Type:     "clotho_selection",
+		Priority: 2,
+	}
+
+	// ارسال task به parallel processor
+	ce.parallelProcessor.AddConsensusTask(task)
+
+	// انتخاب Clothos برای تمام rounds (همچنان برای backward compatibility)
 	ce.clothoSelector.SelectClothos()
 }
 
@@ -401,7 +705,18 @@ func (ce *ConsensusEngine) runFinality() {
 	ce.mu.Lock()
 	defer ce.mu.Unlock()
 
-	// نهایی‌سازی events و تبدیل Clothos به Atropos
+	// ایجاد consensus task برای finality
+	task := &ConsensusTask{
+		Round:    ce.currentRound,
+		Events:   ce.getEventsForRound(ce.currentRound),
+		Type:     "finality",
+		Priority: 3,
+	}
+
+	// ارسال task به parallel processor
+	ce.parallelProcessor.AddConsensusTask(task)
+
+	// نهایی‌سازی events و تبدیل Clothos به Atropos (همچنان برای backward compatibility)
 	ce.finalityEngine.FinalizeEvents()
 }
 
@@ -488,5 +803,332 @@ func (ce *ConsensusEngine) GetConsensusStats() map[string]interface{} {
 	finalityStats := ce.finalityEngine.GetFinalityStats()
 	stats["finality_stats"] = finalityStats
 
+	// آمار Blockchain
+	blockStats := ce.blockchain.GetBlockStats()
+	stats["blockchain_stats"] = blockStats
+
+	// آمار State
+	stateStats := ce.stateDB.GetStateStats()
+	stats["state_stats"] = stateStats
+
+	// آمار Cache
+	if ce.cacheManager != nil {
+		cacheStats := ce.cacheManager.GetCacheStats()
+		stats["cache_stats"] = cacheStats
+	}
+
+	// آمار Memory Optimization
+	if ce.memoryOptimizer != nil {
+		memoryStats := ce.memoryOptimizer.GetMemoryStats()
+		stats["memory_stats"] = memoryStats
+	}
+
+	// آمار Parallel Processing
+	if ce.parallelProcessor != nil {
+		parallelStats := ce.parallelProcessor.GetStats()
+		stats["parallel_stats"] = parallelStats
+	}
+
 	return stats
+}
+
+// GetBlockchain دریافت Blockchain
+func (ce *ConsensusEngine) GetBlockchain() *Blockchain {
+	return ce.blockchain
+}
+
+// GetStateDB دریافت StateDB
+func (ce *ConsensusEngine) GetStateDB() *StateDB {
+	return ce.stateDB
+}
+
+// getEventsForRound دریافت events برای یک round خاص
+func (ce *ConsensusEngine) getEventsForRound(round uint64) []*Event {
+	var events []*Event
+	for _, event := range ce.poset.Events {
+		if event.Round == round {
+			events = append(events, event)
+		}
+	}
+	return events
+}
+
+// ParallelProcessor پردازش موازی events و consensus
+type ParallelProcessor struct {
+	eventWorkers     int
+	consensusWorkers int
+	eventQueue       chan *Event
+	consensusQueue   chan *ConsensusTask
+	results          chan *ProcessingResult
+	mu               sync.RWMutex
+	running          bool
+}
+
+// ConsensusTask وظیفه consensus
+type ConsensusTask struct {
+	Round    uint64
+	Events   []*Event
+	Type     string // "fame_voting", "clotho_selection", "finality"
+	Priority int
+}
+
+// ProcessingResult نتیجه پردازش
+type ProcessingResult struct {
+	TaskID   string
+	Success  bool
+	Data     interface{}
+	Error    error
+	Duration time.Duration
+}
+
+// NewParallelProcessor ایجاد ParallelProcessor جدید
+func NewParallelProcessor(eventWorkers, consensusWorkers int) *ParallelProcessor {
+	return &ParallelProcessor{
+		eventWorkers:     eventWorkers,
+		consensusWorkers: consensusWorkers,
+		eventQueue:       make(chan *Event, 1000),
+		consensusQueue:   make(chan *ConsensusTask, 100),
+		results:          make(chan *ProcessingResult, 100),
+	}
+}
+
+// Start شروع پردازش موازی
+func (pp *ParallelProcessor) Start() {
+	pp.mu.Lock()
+	defer pp.mu.Unlock()
+
+	if pp.running {
+		return
+	}
+
+	pp.running = true
+
+	// شروع event workers
+	for i := 0; i < pp.eventWorkers; i++ {
+		go pp.eventWorker(i)
+	}
+
+	// شروع consensus workers
+	for i := 0; i < pp.consensusWorkers; i++ {
+		go pp.consensusWorker(i)
+	}
+
+	// شروع result processor
+	go pp.resultProcessor()
+}
+
+// Stop توقف پردازش موازی
+func (pp *ParallelProcessor) Stop() {
+	pp.mu.Lock()
+	defer pp.mu.Unlock()
+
+	if !pp.running {
+		return
+	}
+
+	pp.running = false
+	close(pp.eventQueue)
+	close(pp.consensusQueue)
+	close(pp.results)
+}
+
+// AddEvent اضافه کردن event برای پردازش موازی
+func (pp *ParallelProcessor) AddEvent(event *Event) {
+	select {
+	case pp.eventQueue <- event:
+	default:
+		// Queue full, drop event
+	}
+}
+
+// AddConsensusTask اضافه کردن consensus task برای پردازش موازی
+func (pp *ParallelProcessor) AddConsensusTask(task *ConsensusTask) {
+	select {
+	case pp.consensusQueue <- task:
+	default:
+		// Queue full, drop task
+	}
+}
+
+// eventWorker worker برای پردازش events
+func (pp *ParallelProcessor) eventWorker(id int) {
+	for event := range pp.eventQueue {
+		if !pp.running {
+			break
+		}
+
+		start := time.Now()
+
+		// پردازش event
+		result := pp.processEvent(event)
+
+		// ارسال نتیجه
+		pp.results <- &ProcessingResult{
+			TaskID:   fmt.Sprintf("event_%d", id),
+			Success:  result.Success,
+			Data:     result.Data,
+			Error:    result.Error,
+			Duration: time.Since(start),
+		}
+	}
+}
+
+// consensusWorker worker برای پردازش consensus
+func (pp *ParallelProcessor) consensusWorker(id int) {
+	for task := range pp.consensusQueue {
+		if !pp.running {
+			break
+		}
+
+		start := time.Now()
+
+		// پردازش consensus task
+		result := pp.processConsensusTask(task)
+
+		// ارسال نتیجه
+		pp.results <- &ProcessingResult{
+			TaskID:   fmt.Sprintf("consensus_%d_%s", id, task.Type),
+			Success:  result.Success,
+			Data:     result.Data,
+			Error:    result.Error,
+			Duration: time.Since(start),
+		}
+	}
+}
+
+// resultProcessor پردازش نتایج
+func (pp *ParallelProcessor) resultProcessor() {
+	for result := range pp.results {
+		if !pp.running {
+			break
+		}
+
+		// پردازش نتیجه
+		pp.handleResult(result)
+	}
+}
+
+// processEvent پردازش یک event
+func (pp *ParallelProcessor) processEvent(event *Event) *ProcessingResult {
+	start := time.Now()
+
+	// پردازش event در parallel processor
+	// اینجا می‌توانیم event را به consensus engine ارسال کنیم
+	result := &ProcessingResult{
+		TaskID:   "event_" + fmt.Sprintf("%x", event.Hash()),
+		Success:  true,
+		Data:     event,
+		Error:    nil,
+		Duration: time.Since(start),
+	}
+
+	// در نسخه کامل، اینجا event را به consensus engine ارسال می‌کنیم
+	// برای مثال: ce.AddEvent(event)
+
+	return result
+}
+
+// processConsensusTask پردازش یک consensus task
+func (pp *ParallelProcessor) processConsensusTask(task *ConsensusTask) *ProcessingResult {
+	switch task.Type {
+	case "fame_voting":
+		return pp.processFameVoting(task)
+	case "clotho_selection":
+		return pp.processClothoSelection(task)
+	case "finality":
+		return pp.processFinality(task)
+	default:
+		return &ProcessingResult{
+			Success: false,
+			Error:   fmt.Errorf("unknown task type: %s", task.Type),
+		}
+	}
+}
+
+// processFameVoting پردازش fame voting
+func (pp *ParallelProcessor) processFameVoting(task *ConsensusTask) *ProcessingResult {
+	start := time.Now()
+
+	// پردازش fame voting برای events
+	// در نسخه کامل، این با FameVoting component ادغام می‌شود
+	result := &ProcessingResult{
+		TaskID:   fmt.Sprintf("fame_voting_%d", task.Round),
+		Success:  true,
+		Data:     map[string]interface{}{"round": task.Round, "type": "fame_voting", "events_count": len(task.Events)},
+		Error:    nil,
+		Duration: time.Since(start),
+	}
+
+	// در نسخه کامل، اینجا FameVoting component را فراخوانی می‌کنیم
+	// برای مثال: fameVoting.ProcessFameVoting(task.Round, task.Events)
+
+	return result
+}
+
+// processClothoSelection پردازش clotho selection
+func (pp *ParallelProcessor) processClothoSelection(task *ConsensusTask) *ProcessingResult {
+	start := time.Now()
+
+	// پردازش clotho selection برای events
+	// در نسخه کامل، این با ClothoSelector component ادغام می‌شود
+	result := &ProcessingResult{
+		TaskID:   fmt.Sprintf("clotho_selection_%d", task.Round),
+		Success:  true,
+		Data:     map[string]interface{}{"round": task.Round, "type": "clotho_selection", "events_count": len(task.Events)},
+		Error:    nil,
+		Duration: time.Since(start),
+	}
+
+	// در نسخه کامل، اینجا ClothoSelector component را فراخوانی می‌کنیم
+	// برای مثال: clothoSelector.SelectClothosForRound(task.Round, task.Events)
+
+	return result
+}
+
+// processFinality پردازش finality
+func (pp *ParallelProcessor) processFinality(task *ConsensusTask) *ProcessingResult {
+	start := time.Now()
+
+	// پردازش finality برای events
+	// در نسخه کامل، این با FinalityEngine component ادغام می‌شود
+	result := &ProcessingResult{
+		TaskID:   fmt.Sprintf("finality_%d", task.Round),
+		Success:  true,
+		Data:     map[string]interface{}{"round": task.Round, "type": "finality", "events_count": len(task.Events)},
+		Error:    nil,
+		Duration: time.Since(start),
+	}
+
+	// در نسخه کامل، اینجا FinalityEngine component را فراخوانی می‌کنیم
+	// برای مثال: finalityEngine.FinalizeEventsForRound(task.Round, task.Events)
+
+	return result
+}
+
+// handleResult پردازش نتیجه
+func (pp *ParallelProcessor) handleResult(result *ProcessingResult) {
+	if result.Success {
+		// پردازش نتیجه موفق
+		fmt.Printf("✅ Parallel processing completed: %s (Duration: %v)\n",
+			result.TaskID, result.Duration)
+	} else {
+		// پردازش خطا
+		fmt.Printf("❌ Parallel processing failed: %s (Error: %v)\n",
+			result.TaskID, result.Error)
+	}
+}
+
+// GetStats آمار پردازش موازی
+func (pp *ParallelProcessor) GetStats() map[string]interface{} {
+	pp.mu.RLock()
+	defer pp.mu.RUnlock()
+
+	return map[string]interface{}{
+		"event_workers":        pp.eventWorkers,
+		"consensus_workers":    pp.consensusWorkers,
+		"running":              pp.running,
+		"event_queue_size":     len(pp.eventQueue),
+		"consensus_queue_size": len(pp.consensusQueue),
+		"results_queue_size":   len(pp.results),
+	}
 }

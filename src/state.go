@@ -1,12 +1,18 @@
 package main
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"math/big"
+	"runtime"
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/state"
+	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/rlp"
 )
 
 // StateDB مدیریت state مشابه Fantom
@@ -35,8 +41,15 @@ type StateDB struct {
 	proposals map[uint64]*Proposal
 	votes     map[uint64]map[common.Address]*StateVote
 
+	// State root cache
+	stateRootCache common.Hash
+	stateRootDirty bool
+
 	// Configuration
 	config *StateConfig
+
+	// Memory optimization
+	memoryOptimizer *MemoryOptimizer
 }
 
 type Account struct {
@@ -49,6 +62,7 @@ type Account struct {
 	IsContract  bool
 	Stake       *big.Int
 	IsValidator bool
+	LastSeen    uint64
 }
 
 type Contract struct {
@@ -59,6 +73,7 @@ type Contract struct {
 	Nonce     uint64
 	Creator   common.Address
 	CreatedAt uint64
+	UpdatedAt uint64
 }
 
 type ValidatorState struct {
@@ -70,6 +85,7 @@ type ValidatorState struct {
 	TotalStake *big.Int
 	Rewards    *big.Int
 	LastReward uint64
+	LastSeen   uint64
 }
 
 type Proposal struct {
@@ -84,6 +100,7 @@ type Proposal struct {
 	Executed     bool
 	VotesFor     *big.Int
 	VotesAgainst *big.Int
+	TotalVotes   *big.Int
 }
 
 type StateVote struct {
@@ -112,33 +129,40 @@ const (
 )
 
 type StateConfig struct {
-	MinStake        *big.Int
-	ValidatorReward *big.Int
-	DelegatorReward *big.Int
-	MaxValidators   uint64
-	MinValidators   uint64
+	MinStake           *big.Int
+	ValidatorReward    *big.Int
+	DelegatorReward    *big.Int
+	MaxValidators      uint64
+	MinValidators      uint64
+	StateRootCacheSize int
 }
 
 // NewStateDB ایجاد StateDB جدید
 func NewStateDB() *StateDB {
 	config := &StateConfig{
-		MinStake:        big.NewInt(1000000), // 1M tokens
-		ValidatorReward: big.NewInt(100),     // 100 tokens
-		DelegatorReward: big.NewInt(10),      // 10 tokens
-		MaxValidators:   100,
-		MinValidators:   4,
+		MinStake:           big.NewInt(1000000), // 1M tokens
+		ValidatorReward:    big.NewInt(100),     // 100 tokens
+		DelegatorReward:    big.NewInt(10),      // 10 tokens
+		MaxValidators:      100,
+		MinValidators:      4,
+		StateRootCacheSize: 1000,
 	}
 
+	// ایجاد memory optimizer
+	memoryOptimizer := NewMemoryOptimizer()
+
 	return &StateDB{
-		stateDB:     nil, // فعلاً nil می‌گذاریم
-		accounts:    make(map[common.Address]*Account),
-		contracts:   make(map[common.Address]*Contract),
-		validators:  make(map[common.Address]*ValidatorState),
-		stakes:      make(map[common.Address]*big.Int),
-		delegations: make(map[common.Address]map[common.Address]*big.Int),
-		proposals:   make(map[uint64]*Proposal),
-		votes:       make(map[uint64]map[common.Address]*StateVote),
-		config:      config,
+		stateDB:         nil, // فعلاً nil می‌گذاریم
+		accounts:        make(map[common.Address]*Account),
+		contracts:       make(map[common.Address]*Contract),
+		validators:      make(map[common.Address]*ValidatorState),
+		stakes:          make(map[common.Address]*big.Int),
+		delegations:     make(map[common.Address]map[common.Address]*big.Int),
+		proposals:       make(map[uint64]*Proposal),
+		votes:           make(map[uint64]map[common.Address]*StateVote),
+		config:          config,
+		stateRootDirty:  true,
+		memoryOptimizer: memoryOptimizer,
 	}
 }
 
@@ -162,6 +186,7 @@ func (s *StateDB) GetAccount(address common.Address) *Account {
 		IsContract:  false,
 		Stake:       big.NewInt(0),
 		IsValidator: false,
+		LastSeen:    0,
 	}
 
 	s.accounts[address] = account
@@ -175,6 +200,7 @@ func (s *StateDB) SetBalance(address common.Address, balance *big.Int) {
 
 	account := s.GetAccount(address)
 	account.Balance = new(big.Int).Set(balance)
+	s.markStateRootDirty()
 }
 
 // GetBalance دریافت موجودی
@@ -190,6 +216,7 @@ func (s *StateDB) SetNonce(address common.Address, nonce uint64) {
 
 	account := s.GetAccount(address)
 	account.Nonce = nonce
+	s.markStateRootDirty()
 }
 
 // GetNonce دریافت nonce
@@ -205,8 +232,9 @@ func (s *StateDB) SetCode(address common.Address, code []byte) {
 
 	account := s.GetAccount(address)
 	account.Code = code
-	account.CodeHash = common.BytesToHash(code)
+	account.CodeHash = crypto.Keccak256Hash(code)
 	account.IsContract = len(code) > 0
+	s.markStateRootDirty()
 }
 
 // GetCode دریافت کد قرارداد
@@ -222,6 +250,7 @@ func (s *StateDB) SetStorage(address common.Address, key, value common.Hash) {
 
 	account := s.GetAccount(address)
 	account.Storage[key] = value
+	s.markStateRootDirty()
 }
 
 // GetStorage دریافت storage
@@ -247,9 +276,11 @@ func (s *StateDB) CreateContract(address common.Address, code []byte, creator co
 		Nonce:     0,
 		Creator:   creator,
 		CreatedAt: blockNumber,
+		UpdatedAt: blockNumber,
 	}
 
 	s.contracts[address] = contract
+	s.markStateRootDirty()
 
 	return nil
 }
@@ -284,10 +315,12 @@ func (s *StateDB) AddValidator(address common.Address, stake *big.Int, commissio
 		TotalStake: new(big.Int).Set(stake),
 		Rewards:    big.NewInt(0),
 		LastReward: 0,
+		LastSeen:   0,
 	}
 
 	s.validators[address] = validator
 	s.stakes[address] = new(big.Int).Set(stake)
+	s.markStateRootDirty()
 
 	return nil
 }
@@ -302,6 +335,7 @@ func (s *StateDB) RemoveValidator(address common.Address) error {
 
 	delete(s.validators, address)
 	delete(s.stakes, address)
+	s.markStateRootDirty()
 
 	return nil
 }
@@ -361,6 +395,7 @@ func (s *StateDB) Delegate(delegator, validator common.Address, amount *big.Int)
 		s.delegations[delegator] = make(map[common.Address]*big.Int)
 	}
 	s.delegations[delegator][validator] = new(big.Int).Set(amount)
+	s.markStateRootDirty()
 
 	return nil
 }
@@ -392,6 +427,7 @@ func (s *StateDB) Undelegate(delegator, validator common.Address, amount *big.In
 	// بازگرداندن موجودی
 	delegatorAccount := s.GetAccount(delegator)
 	delegatorAccount.Balance.Add(delegatorAccount.Balance, amount)
+	s.markStateRootDirty()
 
 	return nil
 }
@@ -413,10 +449,12 @@ func (s *StateDB) CreateProposal(id uint64, title, description string, creator c
 		Executed:     false,
 		VotesFor:     big.NewInt(0),
 		VotesAgainst: big.NewInt(0),
+		TotalVotes:   big.NewInt(0),
 	}
 
 	s.proposals[id] = proposal
 	s.votes[id] = make(map[common.Address]*StateVote)
+	s.markStateRootDirty()
 
 	return nil
 }
@@ -452,6 +490,8 @@ func (s *StateDB) Vote(proposalID uint64, voter common.Address, choice VoteChoic
 	case VoteChoiceAgainst:
 		proposal.VotesAgainst.Add(proposal.VotesAgainst, stake)
 	}
+	proposal.TotalVotes.Add(proposal.TotalVotes, stake)
+	s.markStateRootDirty()
 
 	return nil
 }
@@ -479,13 +519,103 @@ func (s *StateDB) GetAllProposals() map[uint64]*Proposal {
 
 // IntermediateRoot محاسبه state root
 func (s *StateDB) IntermediateRoot(commit bool) common.Hash {
-	// پیاده‌سازی محاسبه state root
-	return common.Hash{}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if !s.stateRootDirty && s.stateRootCache != (common.Hash{}) {
+		return s.stateRootCache
+	}
+
+	// محاسبه state root جدید
+	stateRoot := s.calculateStateRoot()
+
+	if commit {
+		s.stateRootCache = stateRoot
+		s.stateRootDirty = false
+	}
+
+	return stateRoot
+}
+
+// calculateStateRoot محاسبه state root
+func (s *StateDB) calculateStateRoot() common.Hash {
+	// جمع‌آوری تمام داده‌های state
+	var stateData []interface{}
+
+	// اضافه کردن accounts
+	for addr, account := range s.accounts {
+		accountData := map[string]interface{}{
+			"address":      addr,
+			"balance":      account.Balance.String(),
+			"nonce":        account.Nonce,
+			"code_hash":    account.CodeHash.Hex(),
+			"is_contract":  account.IsContract,
+			"stake":        account.Stake.String(),
+			"is_validator": account.IsValidator,
+		}
+		stateData = append(stateData, accountData)
+	}
+
+	// اضافه کردن validators
+	for addr, validator := range s.validators {
+		validatorData := map[string]interface{}{
+			"address":     addr,
+			"stake":       validator.Stake.String(),
+			"is_active":   validator.IsActive,
+			"commission":  validator.Commission,
+			"total_stake": validator.TotalStake.String(),
+			"rewards":     validator.Rewards.String(),
+		}
+		stateData = append(stateData, validatorData)
+	}
+
+	// اضافه کردن contracts
+	for addr, contract := range s.contracts {
+		contractData := map[string]interface{}{
+			"address":    addr,
+			"code":       contract.Code,
+			"balance":    contract.Balance.String(),
+			"nonce":      contract.Nonce,
+			"creator":    contract.Creator,
+			"created_at": contract.CreatedAt,
+		}
+		stateData = append(stateData, contractData)
+	}
+
+	// اضافه کردن proposals
+	for id, proposal := range s.proposals {
+		proposalData := map[string]interface{}{
+			"id":            id,
+			"title":         proposal.Title,
+			"creator":       proposal.Creator,
+			"type":          proposal.Type,
+			"votes_for":     proposal.VotesFor.String(),
+			"votes_against": proposal.VotesAgainst.String(),
+			"total_votes":   proposal.TotalVotes.String(),
+			"executed":      proposal.Executed,
+		}
+		stateData = append(stateData, proposalData)
+	}
+
+	// محاسبه hash از تمام داده‌ها
+	hasher := sha256.New()
+	for _, data := range stateData {
+		encoded, _ := rlp.EncodeToBytes(data)
+		hasher.Write(encoded)
+	}
+
+	var hash common.Hash
+	copy(hash[:], hasher.Sum(nil))
+	return hash
 }
 
 // Commit ذخیره تغییرات
 func (s *StateDB) Commit() error {
-	// پیاده‌سازی commit
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// در نسخه کامل، اینجا تغییرات به storage ذخیره می‌شود
+	s.stateRootDirty = true
 	return nil
 }
 
@@ -501,4 +631,206 @@ func (s *StateDB) GetTotalStake() *big.Int {
 		}
 	}
 	return total
+}
+
+// markStateRootDirty علامت‌گذاری state root به عنوان dirty
+func (s *StateDB) markStateRootDirty() {
+	s.stateRootDirty = true
+}
+
+// GetStateStats آمار state
+func (s *StateDB) GetStateStats() map[string]interface{} {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	stats := make(map[string]interface{})
+
+	// آمار accounts
+	stats["total_accounts"] = len(s.accounts)
+	stats["total_contracts"] = len(s.contracts)
+	stats["total_validators"] = len(s.validators)
+
+	// آمار validators
+	activeValidators := 0
+	totalStake := big.NewInt(0)
+	for _, validator := range s.validators {
+		if validator.IsActive {
+			activeValidators++
+			totalStake.Add(totalStake, validator.Stake)
+		}
+	}
+	stats["active_validators"] = activeValidators
+	stats["total_stake"] = totalStake.String()
+
+	// آمار proposals
+	stats["total_proposals"] = len(s.proposals)
+	executedProposals := 0
+	for _, proposal := range s.proposals {
+		if proposal.Executed {
+			executedProposals++
+		}
+	}
+	stats["executed_proposals"] = executedProposals
+
+	// آمار memory optimization
+	if s.memoryOptimizer != nil {
+		memoryStats := s.memoryOptimizer.GetMemoryStats()
+		for key, value := range memoryStats {
+			stats["memory_"+key] = value
+		}
+	}
+
+	return stats
+}
+
+// MemoryOptimizer بهینه‌سازی حافظه
+type MemoryOptimizer struct {
+	eventPool       *sync.Pool
+	blockPool       *sync.Pool
+	transactionPool *sync.Pool
+	gcThreshold     int
+	gcInterval      time.Duration
+	lastGC          time.Time
+	mu              sync.RWMutex
+}
+
+// NewMemoryOptimizer ایجاد MemoryOptimizer جدید
+func NewMemoryOptimizer() *MemoryOptimizer {
+	return &MemoryOptimizer{
+		eventPool: &sync.Pool{
+			New: func() interface{} {
+				return &Event{}
+			},
+		},
+		blockPool: &sync.Pool{
+			New: func() interface{} {
+				return &Block{}
+			},
+		},
+		transactionPool: &sync.Pool{
+			New: func() interface{} {
+				return &types.Transaction{}
+			},
+		},
+		gcThreshold: 1000, // تعداد events قبل از GC
+		gcInterval:  5 * time.Minute,
+		lastGC:      time.Now(),
+	}
+}
+
+// GetEvent از pool دریافت event
+func (mo *MemoryOptimizer) GetEvent() *Event {
+	return mo.eventPool.Get().(*Event)
+}
+
+// PutEvent بازگرداندن event به pool
+func (mo *MemoryOptimizer) PutEvent(event *Event) {
+	// پاک کردن event قبل از بازگرداندن
+	event.Reset()
+	mo.eventPool.Put(event)
+}
+
+// GetBlock از pool دریافت block
+func (mo *MemoryOptimizer) GetBlock() *Block {
+	return mo.blockPool.Get().(*Block)
+}
+
+// PutBlock بازگرداندن block به pool
+func (mo *MemoryOptimizer) PutBlock(block *Block) {
+	// پاک کردن block قبل از بازگرداندن
+	block.Reset()
+	mo.blockPool.Put(block)
+}
+
+// GetTransaction از pool دریافت transaction
+func (mo *MemoryOptimizer) GetTransaction() *types.Transaction {
+	return mo.transactionPool.Get().(*types.Transaction)
+}
+
+// PutTransaction بازگرداندن transaction به pool
+func (mo *MemoryOptimizer) PutTransaction(tx *types.Transaction) {
+	// پاک کردن transaction قبل از بازگرداندن
+	// در نسخه کامل، این با Reset method ادغام می‌شود
+	mo.transactionPool.Put(tx)
+}
+
+// CheckGC بررسی نیاز به garbage collection
+func (mo *MemoryOptimizer) CheckGC(eventCount int) {
+	mo.mu.Lock()
+	defer mo.mu.Unlock()
+
+	// بررسی بر اساس تعداد events
+	if eventCount >= mo.gcThreshold {
+		mo.triggerGC()
+	}
+
+	// بررسی بر اساس زمان
+	if time.Since(mo.lastGC) >= mo.gcInterval {
+		mo.triggerGC()
+	}
+}
+
+// triggerGC اجرای garbage collection
+func (mo *MemoryOptimizer) triggerGC() {
+	// اجرای GC
+	runtime.GC()
+
+	// به‌روزرسانی زمان آخرین GC
+	mo.lastGC = time.Now()
+
+	fmt.Printf("🧹 Memory optimization: Garbage collection completed at %v\n", mo.lastGC)
+}
+
+// GetMemoryStats آمار حافظه
+func (mo *MemoryOptimizer) GetMemoryStats() map[string]interface{} {
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+
+	return map[string]interface{}{
+		"alloc":         m.Alloc,
+		"total_alloc":   m.TotalAlloc,
+		"sys":           m.Sys,
+		"num_gc":        m.NumGC,
+		"heap_alloc":    m.HeapAlloc,
+		"heap_sys":      m.HeapSys,
+		"heap_idle":     m.HeapIdle,
+		"heap_inuse":    m.HeapInuse,
+		"heap_released": m.HeapReleased,
+		"heap_objects":  m.HeapObjects,
+		"stack_inuse":   m.StackInuse,
+		"stack_sys":     m.StackSys,
+		"last_gc":       mo.lastGC,
+		"gc_threshold":  mo.gcThreshold,
+		"gc_interval":   mo.gcInterval,
+	}
+}
+
+// Reset پاک کردن تمام pools
+func (mo *MemoryOptimizer) Reset() {
+	mo.mu.Lock()
+	defer mo.mu.Unlock()
+
+	// پاک کردن pools
+	mo.eventPool = &sync.Pool{
+		New: func() interface{} {
+			return &Event{}
+		},
+	}
+
+	mo.blockPool = &sync.Pool{
+		New: func() interface{} {
+			return &Block{}
+		},
+	}
+
+	mo.transactionPool = &sync.Pool{
+		New: func() interface{} {
+			return &types.Transaction{}
+		},
+	}
+
+	// اجرای GC
+	runtime.GC()
+
+	fmt.Println("🧹 Memory optimization: All pools reset")
 }
