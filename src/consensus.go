@@ -317,18 +317,18 @@ func NewConsensusEngine(config *ConsensusConfig) *ConsensusEngine {
 	dag := &DAG{
 		Events: poset.Events,
 		Rounds: poset.Rounds,
-		Votes:  make(VoteRecord),
+		Votes:  make(map[string]*Vote),
 	}
+
+	// ایجاد blockchain
+	blockchain := NewBlockchain(dag)
+	stateDB := NewStateDB()
 
 	// ایجاد consensus components (exactly like Fantom)
 	roundAssignment := NewRoundAssignment(dag)
 	fameVoting := NewFameVoting(dag)
 	clothoSelector := NewClothoSelector(dag)
 	finalityEngine := NewFinalityEngine(dag)
-
-	// ایجاد blockchain
-	blockchain := NewBlockchain(dag)
-	stateDB := NewStateDB()
 
 	// ایجاد cache manager برای بهبود عملکرد
 	cacheManager := NewCacheManager(10000) // 10K entries
@@ -677,7 +677,7 @@ func (ce *ConsensusEngine) runFameVoting() {
 	ce.parallelProcessor.AddConsensusTask(task)
 
 	// اجرای fame voting برای تمام rounds (همچنان برای backward compatibility)
-	ce.fameVoting.StartFameVoting()
+	ce.fameVoting.StartFameVoting(ce.currentRound)
 }
 
 // runClothoSelection اجرای clotho selection (exactly like Fantom)
@@ -697,7 +697,7 @@ func (ce *ConsensusEngine) runClothoSelection() {
 	ce.parallelProcessor.AddConsensusTask(task)
 
 	// انتخاب Clothos برای تمام rounds (همچنان برای backward compatibility)
-	ce.clothoSelector.SelectClothos()
+	ce.clothoSelector.SelectClothos(ce.currentRound)
 }
 
 // runFinality اجرای finality (exactly like Fantom)
@@ -788,15 +788,11 @@ func (ce *ConsensusEngine) GetConsensusStats() map[string]interface{} {
 	stats["total_rounds"] = len(ce.poset.Rounds)
 
 	// آمار fame voting
-	trueVotes, falseVotes, totalVotes := ce.fameVoting.GetVoteStats(EventID{}, 0)
-	stats["fame_voting_stats"] = map[string]int{
-		"true_votes":  trueVotes,
-		"false_votes": falseVotes,
-		"total_votes": totalVotes,
-	}
+	voteStats := ce.fameVoting.GetVoteStats()
+	stats["fame_voting_stats"] = voteStats
 
 	// آمار Clothos
-	clothoStats := ce.clothoSelector.GetClothosStats()
+	clothoStats := ce.clothoSelector.GetClothoStats()
 	stats["clotho_stats"] = clothoStats
 
 	// آمار Finality

@@ -59,8 +59,8 @@ func NewInitialDistribution() *InitialDistribution {
 		TeamWallets: []common.Address{
 			common.HexToAddress("0x1111111111111111111111111111111111111111"), // Founder 1
 			common.HexToAddress("0x2222222222222222222222222222222222222222"), // Founder 2
-			common.HexToAddress("0x3333333333333333333333333333333333333333"), // CTO
-			common.HexToAddress("0x4444444444444444444444444444444444444444"), // Lead Developer
+			common.HexToAddress("0x3333333333333333333333333333333333333333"), // founder 3
+			common.HexToAddress("0x4444444444444444444444444444444444444444"), // founder 4
 			common.HexToAddress("0x5555555555555555555555555555555555555555"), // Marketing Lead
 		},
 
@@ -1029,6 +1029,26 @@ func (s *StateDB) GetDistributionInfo() map[string]interface{} {
 	info["reserve_amount"] = reserveAmount.String()
 
 	return info
+}
+
+// UpdateFinalizedEvent به‌روزرسانی event نهایی شده
+func (s *StateDB) UpdateFinalizedEvent(eventID EventID, round uint64) {
+	// ذخیره اطلاعات event نهایی شده
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// در نسخه کامل، این اطلاعات در database ذخیره می‌شود
+	// فعلاً فقط log می‌کنیم
+}
+
+// GetValidatorStake دریافت stake یک validator
+func (s *StateDB) GetValidatorStake(validatorID string) *big.Int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// در نسخه کامل، stake از validator set گرفته می‌شود
+	// فعلاً مقدار پیش‌فرض برمی‌گردانیم
+	return big.NewInt(1000000) // 1M tokens default
 }
 
 // MemoryOptimizer بهینه‌سازی حافظه

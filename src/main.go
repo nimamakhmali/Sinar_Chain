@@ -56,7 +56,7 @@ func main() {
 	}
 
 	// توزیع اولیه ارز سینار
-	fmt.Println("🚀 Initializing SINAR token distribution...")
+	fmt.Println(" Initializing SINAR token distribution...")
 	if err := stateDB.InitializeSINARDistribution(); err != nil {
 		log.Fatalf("Failed to initialize SINAR distribution: %v", err)
 	}
