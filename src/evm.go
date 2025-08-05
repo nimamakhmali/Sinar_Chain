@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"math/big"
+	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/state"
@@ -12,22 +13,64 @@ import (
 	"github.com/ethereum/go-ethereum/params"
 )
 
-// EVMProcessor پردازش‌گر EVM برای Sinar Chain
+// EVMProcessor پردازش‌گر EVM برای Sinar Chain مشابه Fantom Opera
 type EVMProcessor struct {
 	chainConfig *params.ChainConfig
 	stateDB     *StateDB
 	gasLimit    uint64
 	blockNumber *big.Int
 	blockTime   uint64
+
+	// Gas metering
+	gasMeter *GasMeter
+
+	// Contract management
+	contractManager *ContractManager
+
+	// State management
+	stateManager *StateManager
 }
 
-// EVMContext اطلاعات context برای EVM
+// GasMeter مدیریت گس مشابه Fantom Opera
+type GasMeter struct {
+	gasUsed  uint64
+	gasLimit uint64
+	gasPrice *big.Int
+	refund   uint64
+	mu       sync.RWMutex
+}
+
+// ContractManager مدیریت قراردادها
+type ContractManager struct {
+	contracts map[common.Address]*ContractInfo
+	mu        sync.RWMutex
+}
+
+// ContractInfo اطلاعات قرارداد
+type ContractInfo struct {
+	Address   common.Address
+	Code      []byte
+	Creator   common.Address
+	CreatedAt uint64
+	GasUsed   uint64
+	CallCount uint64
+}
+
+// StateManager مدیریت state
+type StateManager struct {
+	snapshots map[int]*state.StateDB
+	currentID int
+	mu        sync.RWMutex
+}
+
+// EVMContext اطلاعات context برای EVM مشابه Fantom Opera
 type EVMContext struct {
 	BlockNumber *big.Int
 	BlockTime   uint64
 	GasLimit    uint64
 	Difficulty  *big.Int
 	BaseFee     *big.Int
+	Coinbase    common.Address
 }
 
 // NewEVMProcessor ایجاد EVM Processor جدید
@@ -56,6 +99,19 @@ func NewEVMProcessor() *EVMProcessor {
 		gasLimit:    30000000, // 30M gas limit
 		blockNumber: big.NewInt(0),
 		blockTime:   0,
+		gasMeter: &GasMeter{
+			gasUsed:  0,
+			gasLimit: 30000000,
+			gasPrice: big.NewInt(1),
+			refund:   0,
+		},
+		contractManager: &ContractManager{
+			contracts: make(map[common.Address]*ContractInfo),
+		},
+		stateManager: &StateManager{
+			snapshots: make(map[int]*state.StateDB),
+			currentID: 0,
+		},
 	}
 }
 
@@ -70,7 +126,7 @@ func (ep *EVMProcessor) SetBlockInfo(blockNumber *big.Int, blockTime uint64) {
 	ep.blockTime = blockTime
 }
 
-// ProcessBlock پردازش بلاک با EVM
+// ProcessBlock پردازش بلاک با EVM مشابه Fantom Opera
 func (ep *EVMProcessor) ProcessBlock(block *Block, parentState *state.StateDB) (*state.StateDB, error) {
 	// ایجاد state جدید
 	var newState *state.StateDB
@@ -86,17 +142,27 @@ func (ep *EVMProcessor) ProcessBlock(block *Block, parentState *state.StateDB) (
 	ep.SetBlockInfo(big.NewInt(int64(block.Header.Number)), block.Header.AtroposTime)
 
 	// پردازش تراکنش‌ها
+	totalGasUsed := uint64(0)
 	for i, tx := range block.Transactions {
 		if err := ep.processTransaction(tx, newState); err != nil {
 			return nil, fmt.Errorf("failed to process transaction %d: %v", i, err)
 		}
+
+		// جمع‌آوری gas used
+		totalGasUsed += ep.gasMeter.gasUsed
 	}
+
+	// به‌روزرسانی block header
+	block.Header.GasUsed = totalGasUsed
 
 	return newState, nil
 }
 
-// processTransaction پردازش یک تراکنش
+// processTransaction پردازش یک تراکنش مشابه Fantom Opera
 func (ep *EVMProcessor) processTransaction(tx *types.Transaction, state *state.StateDB) error {
+	// Reset gas meter
+	ep.gasMeter.Reset()
+
 	// دریافت sender از تراکنش
 	signer := types.LatestSignerForChainID(ep.chainConfig.ChainID)
 	from, err := types.Sender(signer, tx)
@@ -129,13 +195,13 @@ func (ep *EVMProcessor) processTransaction(tx *types.Transaction, state *state.S
 		}
 	}
 
-	fmt.Printf("✅ Transaction processed: %s (From: %s, To: %s, Value: %s)\n",
-		tx.Hash().Hex(), from.Hex(), tx.To().Hex(), tx.Value().String())
+	fmt.Printf("✅ Transaction processed: %s (From: %s, To: %s, Value: %s, Gas: %d)\n",
+		tx.Hash().Hex(), from.Hex(), tx.To().Hex(), tx.Value().String(), ep.gasMeter.gasUsed)
 
 	return nil
 }
 
-// executeEVM اجرای EVM
+// executeEVM اجرای EVM مشابه Fantom Opera
 func (ep *EVMProcessor) executeEVM(tx *types.Transaction, state *state.StateDB) error {
 	// ایجاد EVM context
 	context := vm.BlockContext{
@@ -164,8 +230,21 @@ func (ep *EVMProcessor) executeEVM(tx *types.Transaction, state *state.StateDB) 
 	}, state, ep.chainConfig, vm.Config{})
 
 	// اجرای تراکنش
-	_, _, err = evm.Call(vm.AccountRef(from), *tx.To(), tx.Data(), tx.Gas(), tx.Value())
-	return err
+	_, gasUsed, err := evm.Call(vm.AccountRef(from), *tx.To(), tx.Data(), tx.Gas(), tx.Value())
+	if err != nil {
+		return err
+	}
+
+	// به‌روزرسانی gas meter
+	ep.gasMeter.gasUsed = gasUsed
+
+	// ثبت قرارداد اگر تراکنش deployment است
+	if tx.To() == nil {
+		contractAddr := crypto.CreateAddress(from, state.GetNonce(from))
+		ep.contractManager.RegisterContract(contractAddr, tx.Data(), from, ep.blockNumber.Uint64())
+	}
+
+	return nil
 }
 
 // canTransfer بررسی امکان انتقال
@@ -185,7 +264,7 @@ func (ep *EVMProcessor) getHash(n uint64) common.Hash {
 	return common.Hash{}
 }
 
-// DeployContract استقرار قرارداد هوشمند
+// DeployContract استقرار قرارداد هوشمند مشابه Fantom Opera
 func (ep *EVMProcessor) DeployContract(creator common.Address, code []byte, gasLimit uint64) (common.Address, error) {
 	// ایجاد state جدید
 	state, _ := state.New(common.Hash{}, nil, nil)
@@ -221,12 +300,15 @@ func (ep *EVMProcessor) DeployContract(creator common.Address, code []byte, gasL
 		return common.Address{}, fmt.Errorf("contract deployment failed: %v", err)
 	}
 
+	// ثبت قرارداد
+	ep.contractManager.RegisterContract(contractAddr, code, creator, ep.blockNumber.Uint64())
+
 	fmt.Printf("🏗️ Contract deployed at: %s\n", contractAddr.Hex())
 
 	return contractAddr, nil
 }
 
-// CallContract فراخوانی قرارداد هوشمند
+// CallContract فراخوانی قرارداد هوشمند مشابه Fantom Opera
 func (ep *EVMProcessor) CallContract(contractAddr common.Address, caller common.Address, data []byte, gasLimit uint64) ([]byte, error) {
 	// ایجاد state جدید
 	state, _ := state.New(common.Hash{}, nil, nil)
@@ -257,12 +339,16 @@ func (ep *EVMProcessor) CallContract(contractAddr common.Address, caller common.
 	}, state, ep.chainConfig, vm.Config{})
 
 	// اجرای فراخوانی
-	result, _, err := evm.Call(vm.AccountRef(caller), contractAddr, data, gasLimit, big.NewInt(0))
+	result, gasUsed, err := evm.Call(vm.AccountRef(caller), contractAddr, data, gasLimit, big.NewInt(0))
 	if err != nil {
 		return nil, fmt.Errorf("contract call failed: %v", err)
 	}
 
-	fmt.Printf("📞 Contract called: %s (Data: %x, Result: %x)\n", contractAddr.Hex(), data, result)
+	// به‌روزرسانی آمار قرارداد
+	ep.contractManager.UpdateContractStats(contractAddr, gasUsed)
+
+	fmt.Printf("📞 Contract called: %s (Data: %x, Result: %x, Gas: %d)\n",
+		contractAddr.Hex(), data, result, gasUsed)
 
 	return result, nil
 }
@@ -388,6 +474,64 @@ func (ep *EVMProcessor) GetEVMStats() map[string]interface{} {
 	stats["gas_limit"] = ep.gasLimit
 	stats["block_number"] = ep.blockNumber.String()
 	stats["block_time"] = ep.blockTime
+	stats["total_contracts"] = len(ep.contractManager.contracts)
+	stats["gas_used"] = ep.gasMeter.gasUsed
+	stats["gas_price"] = ep.gasMeter.gasPrice.String()
 
 	return stats
+}
+
+// Reset بازنشانی gas meter
+func (gm *GasMeter) Reset() {
+	gm.mu.Lock()
+	defer gm.mu.Unlock()
+	gm.gasUsed = 0
+	gm.refund = 0
+}
+
+// RegisterContract ثبت قرارداد جدید
+func (cm *ContractManager) RegisterContract(address common.Address, code []byte, creator common.Address, blockNumber uint64) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	cm.contracts[address] = &ContractInfo{
+		Address:   address,
+		Code:      code,
+		Creator:   creator,
+		CreatedAt: blockNumber,
+		GasUsed:   0,
+		CallCount: 0,
+	}
+}
+
+// UpdateContractStats به‌روزرسانی آمار قرارداد
+func (cm *ContractManager) UpdateContractStats(address common.Address, gasUsed uint64) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	if contract, exists := cm.contracts[address]; exists {
+		contract.GasUsed += gasUsed
+		contract.CallCount++
+	}
+}
+
+// GetContractInfo دریافت اطلاعات قرارداد
+func (cm *ContractManager) GetContractInfo(address common.Address) *ContractInfo {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+
+	return cm.contracts[address]
+}
+
+// GetAllContracts دریافت تمام قراردادها
+func (cm *ContractManager) GetAllContracts() map[common.Address]*ContractInfo {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+
+	result := make(map[common.Address]*ContractInfo)
+	for addr, contract := range cm.contracts {
+		result[addr] = contract
+	}
+
+	return result
 }
