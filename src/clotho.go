@@ -1,395 +1,272 @@
 package main
 
 import (
-	"math/big"
+	"fmt"
 	"sync"
 )
 
-// ClothoSelector مسئول انتخاب Clothos از famous witnesses
+// ClothoSelector انتخاب Clothos مشابه Fantom Opera
 type ClothoSelector struct {
-	dag          *DAG
-	fameVoting   *FameVoting
-	cacheManager *CacheManager
-	mu           sync.RWMutex
-}
+	dag *DAG
+	mu  sync.RWMutex
 
-// ClothoInfo اطلاعات Clotho
-type ClothoInfo struct {
-	EventID       EventID
-	Round         uint64
-	CreatorID     string
-	IsSelected    bool
-	SelectionTime uint64
-	AtroposTime   uint64
+	// Clotho tracking
+	clothos map[uint64]map[EventID]*Event
+	rounds  map[uint64]*RoundInfo
+
+	// Selection criteria
+	selectionCriteria map[string]interface{}
 }
 
 // NewClothoSelector ایجاد ClothoSelector جدید
 func NewClothoSelector(dag *DAG) *ClothoSelector {
 	return &ClothoSelector{
-		dag:          dag,
-		fameVoting:   NewFameVoting(dag),
-		cacheManager: NewCacheManager(1000),
+		dag:               dag,
+		clothos:           make(map[uint64]map[EventID]*Event),
+		rounds:            make(map[uint64]*RoundInfo),
+		selectionCriteria: make(map[string]interface{}),
 	}
 }
 
-// SelectClothos انتخاب Clothos برای تمام rounds
-func (cs *ClothoSelector) SelectClothos() {
-	// برای هر round که famous witnesses دارد
-	for round := range cs.dag.Rounds {
-		famousWitnesses := cs.getFamousWitnesses(round)
-		if len(famousWitnesses) == 0 {
-			continue
-		}
+// SelectClothos انتخاب Clothos برای یک round
+func (cs *ClothoSelector) SelectClothos(round uint64) error {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
 
-		// انتخاب Clothos برای این round
-		cs.selectClothosForRound(round, famousWitnesses)
+	// بررسی اینکه آیا قبلاً انتخاب شده
+	if _, exists := cs.clothos[round]; exists {
+		return nil
 	}
+
+	// دریافت famous witnesses این round
+	famousWitnesses := cs.getFamousWitnesses(round)
+	if len(famousWitnesses) == 0 {
+		return fmt.Errorf("no famous witnesses found for round %d", round)
+	}
+
+	// انتخاب Clothos بر اساس الگوریتم Fantom Opera
+	selectedClothos := cs.selectClothosFromWitnesses(famousWitnesses, round)
+
+	// ذخیره Clothos انتخاب شده
+	cs.clothos[round] = selectedClothos
+
+	fmt.Printf("🎯 Selected %d Clothos for round %d\n", len(selectedClothos), round)
+	return nil
 }
 
-// selectClothosForRound انتخاب Clothos برای یک round
-func (cs *ClothoSelector) selectClothosForRound(round uint64, famousWitnesses []*Event) {
-	// برای هر famous witness، بررسی تبدیل به Clotho
-	for _, witness := range famousWitnesses {
-		if witness.IsClotho {
-			continue // قبلاً Clotho شده
-		}
+// selectClothosFromWitnesses انتخاب Clothos از famous witnesses
+func (cs *ClothoSelector) selectClothosFromWitnesses(witnesses map[EventID]*Event, round uint64) map[EventID]*Event {
+	clothos := make(map[EventID]*Event)
 
-		// بررسی شرایط تبدیل به Clotho
-		if cs.canBecomeClotho(witness, round) {
-			cs.convertToClotho(witness, round)
+	// الگوریتم انتخاب Clothos از Fantom Opera:
+	// 1. هر famous witness که شرایط Clotho را داشته باشد انتخاب می‌شود
+	// 2. شرایط: باید در round بعدی events داشته باشد که آن را ببینند
+	// 3. باید consensus در مورد آن در round بعدی رسیده باشد
+
+	for witnessID, witness := range witnesses {
+		if cs.isClothoCandidate(witness, round) {
+			clothos[witnessID] = witness
 		}
 	}
+
+	return clothos
 }
 
-// canBecomeClotho بررسی شرایط تبدیل witness به Clotho
-func (cs *ClothoSelector) canBecomeClotho(witness *Event, round uint64) bool {
+// isClothoCandidate بررسی اینکه آیا یک witness می‌تواند Clotho باشد
+func (cs *ClothoSelector) isClothoCandidate(witness *Event, round uint64) bool {
 	// شرط 1: باید famous باشد
-	if witness.IsFamous == nil || !*witness.IsFamous {
+	if !cs.isFamous(witness, round) {
 		return false
 	}
 
-	// شرط 2: باید اکثریت famous witnesses از round+1 آن را ببینند
+	// شرط 2: باید در round بعدی events داشته باشد که آن را ببینند
+	if !cs.hasEventsInNextRound(witness, round) {
+		return false
+	}
+
+	// شرط 3: باید consensus در round بعدی رسیده باشد
+	if !cs.hasConsensusInNextRound(witness, round) {
+		return false
+	}
+
+	// شرط 4: باید شرایط visibility را داشته باشد
+	if !cs.hasProperVisibility(witness, round) {
+		return false
+	}
+
+	return true
+}
+
+// isFamous بررسی اینکه آیا یک witness famous است
+func (cs *ClothoSelector) isFamous(witness *Event, round uint64) bool {
+	// بررسی از fame voting
+	fameVoting := cs.dag.GetFameVoting()
+	if fameVoting == nil {
+		return false
+	}
+
+	// بررسی اینکه آیا در famous witnesses قرار دارد
+	famousWitnesses := fameVoting.getFamousWitnesses(round)
+	_, isFamous := famousWitnesses[witness.Hash()]
+	return isFamous
+}
+
+// hasEventsInNextRound بررسی اینکه آیا در round بعدی events وجود دارد که این witness را ببینند
+func (cs *ClothoSelector) hasEventsInNextRound(witness *Event, round uint64) bool {
 	nextRound := round + 1
-	famousWitnessesNextRound := cs.getFamousWitnesses(nextRound)
-	if len(famousWitnessesNextRound) == 0 {
-		return false
-	}
 
-	// شمارش famous witnesses که این witness را می‌بینند
+	cs.dag.mu.RLock()
+	defer cs.dag.mu.RUnlock()
+
+	// شمارش events در round بعدی که این witness را می‌بینند
 	seeCount := 0
-	totalFamousWitnesses := len(famousWitnessesNextRound)
-
-	for _, nextWitness := range famousWitnessesNextRound {
-		if cs.dag.IsAncestor(witness.Hash(), nextWitness.Hash()) {
-			seeCount++
+	for eventID, event := range cs.dag.Events {
+		if event.Round == nextRound {
+			if cs.canSee(eventID, witness.Hash()) {
+				seeCount++
+			}
 		}
 	}
 
-	// باید اکثریت (2/3) آن را ببینند (Byzantine fault tolerance)
-	requiredCount := (2 * totalFamousWitnesses) / 3
-	return seeCount > requiredCount
+	// باید حداقل 2/3 events در round بعدی این witness را ببینند
+	totalEventsInNextRound := 0
+	for _, event := range cs.dag.Events {
+		if event.Round == nextRound {
+			totalEventsInNextRound++
+		}
+	}
+
+	if totalEventsInNextRound == 0 {
+		return false
+	}
+
+	threshold := (totalEventsInNextRound * 2) / 3
+	return seeCount > threshold
 }
 
-// convertToClotho تبدیل witness به Clotho
-func (cs *ClothoSelector) convertToClotho(witness *Event, round uint64) {
-	// تبدیل به Clotho
-	witness.IsClotho = true
-	witness.RoundReceived = round + 2 // Clotho در round+2 نهایی می‌شود
+// hasConsensusInNextRound بررسی اینکه آیا در round بعدی consensus رسیده
+func (cs *ClothoSelector) hasConsensusInNextRound(witness *Event, round uint64) bool {
+	nextRound := round + 1
 
-	// اضافه کردن به round info
-	cs.ensureRound(round + 2)
-	cs.dag.Rounds[round+2].Clothos[witness.Hash()] = witness
+	// بررسی اینکه آیا در round بعدی consensus رسیده
+	// این بر اساس fame voting در round بعدی است
+	fameVoting := cs.dag.GetFameVoting()
+	if fameVoting == nil {
+		return false
+	}
 
-	// محاسبه زمان انتخاب
-	witness.AtroposTime = witness.Lamport
+	// بررسی اینکه آیا round بعدی decided شده
+	decidedRounds := fameVoting.decidedRounds
+	return decidedRounds[nextRound]
+}
+
+// hasProperVisibility بررسی visibility مناسب
+func (cs *ClothoSelector) hasProperVisibility(witness *Event, round uint64) bool {
+	// بررسی اینکه آیا witness visibility مناسب دارد
+	// باید توسط اکثر events در round‌های بعدی دیده شود
+
+	cs.dag.mu.RLock()
+	defer cs.dag.mu.RUnlock()
+
+	// شمارش events در round‌های بعدی که این witness را می‌بینند
+	seeCount := 0
+	totalCount := 0
+
+	for _, event := range cs.dag.Events {
+		if event.Round > round {
+			totalCount++
+			if cs.canSee(event.Hash(), witness.Hash()) {
+				seeCount++
+			}
+		}
+	}
+
+	if totalCount == 0 {
+		return false
+	}
+
+	// باید حداقل 2/3 events در round‌های بعدی این witness را ببینند
+	threshold := (totalCount * 2) / 3
+	return seeCount > threshold
+}
+
+// canSee بررسی اینکه آیا event A می‌تواند event B را ببیند
+func (cs *ClothoSelector) canSee(eventA, eventB EventID) bool {
+	// استفاده از الگوریتم canSee از DAG
+	return cs.dag.IsAncestor(eventA, eventB)
 }
 
 // getFamousWitnesses دریافت famous witnesses یک round
-func (cs *ClothoSelector) getFamousWitnesses(round uint64) []*Event {
-	cs.mu.RLock()
-	defer cs.mu.RUnlock()
-
-	// بررسی cache manager
-	if cachedData, exists := cs.cacheManager.GetConsensusCache(round); exists {
-		if witnessesData, ok := cachedData["famous_witnesses"]; ok {
-			if witnesses, ok := witnessesData.([]*Event); ok {
-				return witnesses
-			}
-		}
+func (cs *ClothoSelector) getFamousWitnesses(round uint64) map[EventID]*Event {
+	fameVoting := cs.dag.GetFameVoting()
+	if fameVoting == nil {
+		return make(map[EventID]*Event)
 	}
 
-	roundInfo, exists := cs.dag.Rounds[round]
-	if !exists {
-		return nil
-	}
-
-	var famousWitnesses []*Event
-	for _, witness := range roundInfo.Witnesses {
-		if witness.IsFamous != nil && *witness.IsFamous {
-			famousWitnesses = append(famousWitnesses, witness)
-		}
-	}
-
-	// ذخیره در cache manager
-	cacheData := map[string]interface{}{
-		"famous_witnesses": famousWitnesses,
-	}
-	cs.cacheManager.SetConsensusCache(round, cacheData)
-
-	return famousWitnesses
+	return fameVoting.getFamousWitnesses(round)
 }
 
 // GetClothos دریافت Clothos یک round
-func (cs *ClothoSelector) GetClothos(round uint64) []*Event {
-	roundInfo, exists := cs.dag.Rounds[round]
-	if !exists {
-		return nil
+func (cs *ClothoSelector) GetClothos(round uint64) map[EventID]*Event {
+	cs.mu.RLock()
+	defer cs.mu.RUnlock()
+
+	if clothos, exists := cs.clothos[round]; exists {
+		return clothos
 	}
 
-	clothos := make([]*Event, 0, len(roundInfo.Clothos))
-	for _, clotho := range roundInfo.Clothos {
-		clothos = append(clothos, clotho)
-	}
-
-	return clothos
+	return make(map[EventID]*Event)
 }
 
-// ensureRound اطمینان از وجود round
-func (cs *ClothoSelector) ensureRound(r uint64) {
-	if cs.dag.Rounds == nil {
-		cs.dag.Rounds = make(RoundTable)
+// GetAllClothos دریافت تمام Clothos
+func (cs *ClothoSelector) GetAllClothos() map[uint64]map[EventID]*Event {
+	cs.mu.RLock()
+	defer cs.mu.RUnlock()
+
+	result := make(map[uint64]map[EventID]*Event)
+	for round, clothos := range cs.clothos {
+		result[round] = clothos
 	}
-	if _, exists := cs.dag.Rounds[r]; !exists {
-		cs.dag.Rounds[r] = &RoundInfo{
-			Witnesses: make(map[EventID]*Event),
-			Roots:     make(map[EventID]*Event),
-			Clothos:   make(map[EventID]*Event),
-			Atropos:   make(map[EventID]*Event),
-		}
-	}
+
+	return result
 }
 
-// GetClothosForRound دریافت Clothos برای یک round خاص
-func (cs *ClothoSelector) GetClothosForRound(round uint64) []*Event {
-	roundInfo, exists := cs.dag.Rounds[round]
-	if !exists {
-		return nil
-	}
+// GetClothoStats آمار Clothos
+func (cs *ClothoSelector) GetClothoStats() map[string]interface{} {
+	cs.mu.RLock()
+	defer cs.mu.RUnlock()
 
-	var clothos []*Event
-	for _, clotho := range roundInfo.Clothos {
-		clothos = append(clothos, clotho)
-	}
-
-	return clothos
-}
-
-// IsClotho بررسی اینکه آیا یک event Clotho است
-func (cs *ClothoSelector) IsClotho(eventID EventID) bool {
-	event, exists := cs.dag.GetEvent(eventID)
-	if !exists {
-		return false
-	}
-	return event.IsClotho
-}
-
-// GetClothosByCreator دریافت Clothos یک creator
-func (cs *ClothoSelector) GetClothosByCreator(creatorID string) []*Event {
-	var clothos []*Event
-
-	for _, event := range cs.dag.Events {
-		if event.CreatorID == creatorID && event.IsClotho {
-			clothos = append(clothos, event)
-		}
-	}
-
-	return clothos
-}
-
-// GetClothosInRange دریافت Clothos در یک بازه round
-func (cs *ClothoSelector) GetClothosInRange(fromRound, toRound uint64) []*Event {
-	var clothos []*Event
-
-	for round := fromRound; round <= toRound; round++ {
-		roundClothos := cs.GetClothos(round)
-		clothos = append(clothos, roundClothos...)
-	}
-
-	return clothos
-}
-
-// GetClothosByStake دریافت Clothos بر اساس stake
-func (cs *ClothoSelector) GetClothosByStake(minStake *big.Int) []*Event {
-	var clothos []*Event
-
-	for _, event := range cs.dag.Events {
-		if event.IsClotho {
-			// در نسخه کامل، stake از validator set گرفته می‌شود
-			stake := big.NewInt(1000000) // 1M tokens default
-			if stake.Cmp(minStake) >= 0 {
-				clothos = append(clothos, event)
-			}
-		}
-	}
-
-	return clothos
-}
-
-// GetClothosByTime دریافت Clothos در یک بازه زمانی
-func (cs *ClothoSelector) GetClothosByTime(fromTime, toTime uint64) []*Event {
-	var clothos []*Event
-
-	for _, event := range cs.dag.Events {
-		if event.IsClotho &&
-			event.AtroposTime >= fromTime &&
-			event.AtroposTime <= toTime {
-			clothos = append(clothos, event)
-		}
-	}
-
-	return clothos
-}
-
-// GetClothosStats آمار Clothos
-func (cs *ClothoSelector) GetClothosStats() map[string]interface{} {
 	stats := make(map[string]interface{})
+	stats["total_rounds_with_clothos"] = len(cs.clothos)
 
-	totalClothos := 0
-	clothosByRound := make(map[uint64]int)
-	clothosByCreator := make(map[string]int)
-	clothosByTime := make(map[uint64]int)
-
-	for _, event := range cs.dag.Events {
-		if event.IsClotho {
-			totalClothos++
-			clothosByRound[event.RoundReceived]++
-			clothosByCreator[event.CreatorID]++
-			clothosByTime[event.AtroposTime]++
+	// آمار per round
+	roundStats := make(map[uint64]map[string]interface{})
+	for round, clothos := range cs.clothos {
+		roundStats[round] = map[string]interface{}{
+			"clotho_count": len(clothos),
+			"clotho_ids":   cs.getClothoIDs(clothos),
 		}
 	}
-
-	stats["total_clothos"] = totalClothos
-	stats["clothos_by_round"] = clothosByRound
-	stats["clothos_by_creator"] = clothosByCreator
-	stats["clothos_by_time"] = clothosByTime
-
-	// محاسبه آمار اضافی
-	if totalClothos > 0 {
-		stats["avg_clothos_per_round"] = float64(totalClothos) / float64(len(clothosByRound))
-		stats["avg_clothos_per_creator"] = float64(totalClothos) / float64(len(clothosByCreator))
-	} else {
-		stats["avg_clothos_per_round"] = 0.0
-		stats["avg_clothos_per_creator"] = 0.0
-	}
-
-	// آمار cache
-	if cs.cacheManager != nil {
-		cacheStats := cs.cacheManager.GetCacheStats()
-		for key, value := range cacheStats {
-			stats["cache_"+key] = value
-		}
-	}
+	stats["round_stats"] = roundStats
 
 	return stats
 }
 
-// ValidateClothoSelection اعتبارسنجی انتخاب Clotho
-func (cs *ClothoSelector) ValidateClothoSelection(clotho *Event, round uint64) bool {
-	// بررسی شرایط اعتبارسنجی
-	if !clotho.IsClotho {
-		return false
+// getClothoIDs دریافت ID های Clothos
+func (cs *ClothoSelector) getClothoIDs(clothos map[EventID]*Event) []string {
+	ids := make([]string, 0, len(clothos))
+	for clothoID := range clothos {
+		ids = append(ids, fmt.Sprintf("%x", clothoID[:8])) // نمایش 8 بایت اول
 	}
-
-	// بررسی famous بودن
-	if clotho.IsFamous == nil || !*clotho.IsFamous {
-		return false
-	}
-
-	// بررسی round assignment
-	if clotho.RoundReceived != round+2 {
-		return false
-	}
-
-	// بررسی visibility conditions
-	nextRound := round + 1
-	famousWitnessesNextRound := cs.getFamousWitnesses(nextRound)
-	seeCount := 0
-
-	for _, witness := range famousWitnessesNextRound {
-		if cs.dag.IsAncestor(clotho.Hash(), witness.Hash()) {
-			seeCount++
-		}
-	}
-
-	requiredCount := (2 * len(famousWitnessesNextRound)) / 3
-	return seeCount > requiredCount
+	return ids
 }
 
-// GetClothosByVisibility دریافت Clothos بر اساس visibility
-func (cs *ClothoSelector) GetClothosByVisibility(minVisibility int) []*Event {
-	var clothos []*Event
+// Reset بازنشانی برای تست
+func (cs *ClothoSelector) Reset() {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
 
-	for _, event := range cs.dag.Events {
-		if event.IsClotho {
-			// محاسبه visibility
-			visibility := cs.calculateVisibility(event)
-			if visibility >= minVisibility {
-				clothos = append(clothos, event)
-			}
-		}
-	}
-
-	return clothos
-}
-
-// calculateVisibility محاسبه visibility یک event
-func (cs *ClothoSelector) calculateVisibility(event *Event) int {
-	visibility := 0
-
-	for _, otherEvent := range cs.dag.Events {
-		if cs.dag.IsAncestor(event.Hash(), otherEvent.Hash()) {
-			visibility++
-		}
-	}
-
-	return visibility
-}
-
-// GetClothosByConsensus دریافت Clothos بر اساس شرایط اجماع
-func (cs *ClothoSelector) GetClothosByConsensus(consensusThreshold float64) []*Event {
-	var clothos []*Event
-
-	for _, event := range cs.dag.Events {
-		if event.IsClotho {
-			// محاسبه consensus ratio
-			consensusRatio := cs.calculateConsensusRatio(event)
-			if consensusRatio >= consensusThreshold {
-				clothos = append(clothos, event)
-			}
-		}
-	}
-
-	return clothos
-}
-
-// calculateConsensusRatio محاسبه نسبت اجماع
-func (cs *ClothoSelector) calculateConsensusRatio(event *Event) float64 {
-	totalWitnesses := 0
-	agreeingWitnesses := 0
-
-	// شمارش شاهدان موافق
-	for _, otherEvent := range cs.dag.Events {
-		if otherEvent.IsFamous != nil && *otherEvent.IsFamous {
-			totalWitnesses++
-			if cs.dag.IsAncestor(event.Hash(), otherEvent.Hash()) {
-				agreeingWitnesses++
-			}
-		}
-	}
-
-	if totalWitnesses == 0 {
-		return 0.0
-	}
-
-	return float64(agreeingWitnesses) / float64(totalWitnesses)
+	cs.clothos = make(map[uint64]map[EventID]*Event)
+	cs.rounds = make(map[uint64]*RoundInfo)
+	cs.selectionCriteria = make(map[string]interface{})
 }

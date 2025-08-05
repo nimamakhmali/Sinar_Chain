@@ -2,765 +2,302 @@ package main
 
 import (
 	"fmt"
-	"math/big"
-	"sort"
 	"sync"
 )
 
-// Vote رای یک voter برای یک witness
-type Vote struct {
-	Vote      bool
-	Decided   bool
-	Round     uint64
-	Weight    *big.Int // وزن رای (بر اساس stake)
-	VoterID   EventID
-	WitnessID EventID
-}
-
-// VoteRecord نگهداری آراء: [voter][witness]
-type VoteRecord map[EventID]map[EventID]*Vote
-
-// FameVotingState نگهداری وضعیت fame voting
-type FameVotingState struct {
-	CurrentRound    uint64
-	Votes           VoteRecord
-	Decided         map[EventID]bool
-	Weights         map[EventID]*big.Int // وزن هر voter
-	FamousWitnesses map[uint64]map[EventID]*Event
-}
-
-// FameVoting مسئول اجرای الگوریتم fame voting
+// FameVoting الگوریتم Fame Voting مشابه Fantom Opera
 type FameVoting struct {
-	dag          *DAG
-	state        *FameVotingState
-	cacheManager *CacheManager
-	mu           sync.RWMutex
+	dag *DAG
+	mu  sync.RWMutex
+
+	// Fame voting state
+	votes     map[string]*Vote
+	voteCount map[string]int
+
+	// Witness tracking
+	witnesses map[uint64]map[EventID]*Event
+	rounds    map[uint64]*RoundInfo
+
+	// Fame determination
+	famousWitnesses map[EventID]bool
+	decidedRounds   map[uint64]bool
+}
+
+// Vote رأی در Fame Voting
+type Vote struct {
+	WitnessID EventID
+	Round     uint64
+	Voter     EventID
+	Choice    bool // true = yes, false = no
+	Decided   bool
 }
 
 // NewFameVoting ایجاد FameVoting جدید
 func NewFameVoting(dag *DAG) *FameVoting {
 	return &FameVoting{
-		dag:          dag,
-		cacheManager: NewCacheManager(1000),
-		state: &FameVotingState{
-			Votes:           make(VoteRecord),
-			Decided:         make(map[EventID]bool),
-			Weights:         make(map[EventID]*big.Int),
-			FamousWitnesses: make(map[uint64]map[EventID]*Event),
-		},
+		dag:             dag,
+		votes:           make(map[string]*Vote),
+		voteCount:       make(map[string]int),
+		witnesses:       make(map[uint64]map[EventID]*Event),
+		rounds:          make(map[uint64]*RoundInfo),
+		famousWitnesses: make(map[EventID]bool),
+		decidedRounds:   make(map[uint64]bool),
 	}
 }
 
-// StartFameVoting شروع fame voting برای تمام rounds
-func (fv *FameVoting) StartFameVoting() {
-	// پیدا کردن آخرین round
-	maxRound := fv.getLatestRound()
+// StartFameVoting شروع Fame Voting برای یک round
+func (fv *FameVoting) StartFameVoting(round uint64) error {
+	fv.mu.Lock()
+	defer fv.mu.Unlock()
 
-	// اجرای fame voting برای هر round
-	for r := uint64(0); r <= maxRound; r++ {
-		fv.runFameVotingForRound(r)
-	}
-}
-
-// runFameVotingForRound اجرای fame voting برای یک round
-func (fv *FameVoting) runFameVotingForRound(round uint64) {
-	roundInfo, exists := fv.dag.Rounds[round]
-	if !exists {
-		return
-	}
-
-	// برای هر witness در این round
-	for witnessID := range roundInfo.Witnesses {
-		witness, _ := fv.dag.GetEvent(witnessID)
-		if witness == nil || witness.IsFamous != nil {
-			continue
-		}
-
-		// اجرای fame voting برای این witness
-		fv.runFameVotingForWitness(witnessID, round)
-	}
-}
-
-// runFameVotingForWitness اجرای fame voting برای یک witness
-func (fv *FameVoting) runFameVotingForWitness(witnessID EventID, round uint64) {
-	witness, _ := fv.dag.GetEvent(witnessID)
-	if witness == nil {
-		return
-	}
-
-	// شروع از round بعدی - حداکثر 10 round برای تصمیم‌گیری
-	for votingRound := round + 1; votingRound <= round+10; votingRound++ {
-		voters := fv.getVotersForRound(votingRound)
-		if len(voters) == 0 {
-			continue
-		}
-
-		trueVotes := big.NewInt(0)
-		falseVotes := big.NewInt(0)
-		totalWeight := big.NewInt(0)
-
-		// جمع‌آوری آراء با وزن
-		for voterID := range voters {
-			vote := fv.getVoteForWitness(voterID, witnessID, votingRound)
-			if vote == nil {
-				continue
-			}
-
-			weight := fv.getVoterWeight(voterID)
-			totalWeight.Add(totalWeight, weight)
-
-			if vote.Vote {
-				trueVotes.Add(trueVotes, weight)
-			} else {
-				falseVotes.Add(falseVotes, weight)
-			}
-		}
-
-		if totalWeight.Sign() == 0 {
-			continue
-		}
-
-		// محاسبه دو سوم وزن کل (Byzantine fault tolerance)
-		twoThirds := new(big.Int).Mul(totalWeight, big.NewInt(2))
-		twoThirds.Div(twoThirds, big.NewInt(3))
-
-		// بررسی تصمیم‌گیری
-		if trueVotes.Cmp(twoThirds) > 0 {
-			// Witness famous شد
-			t := true
-			witness.IsFamous = &t
-			fv.state.Decided[witnessID] = true
-
-			// اضافه کردن به famous witnesses
-			if fv.state.FamousWitnesses[round] == nil {
-				fv.state.FamousWitnesses[round] = make(map[EventID]*Event)
-			}
-			fv.state.FamousWitnesses[round][witnessID] = witness
-
-			return
-		} else if falseVotes.Cmp(twoThirds) > 0 {
-			// Witness not famous شد
-			f := false
-			witness.IsFamous = &f
-			fv.state.Decided[witnessID] = true
-			return
-		}
-	}
-}
-
-// getVotersForRound دریافت voters برای یک round
-func (fv *FameVoting) getVotersForRound(round uint64) map[EventID]*Event {
-	fv.mu.RLock()
-	defer fv.mu.RUnlock()
-
-	// بررسی cache manager
-	if cachedData, exists := fv.cacheManager.GetConsensusCache(round); exists {
-		if votersData, ok := cachedData["voters"]; ok {
-			if voters, ok := votersData.(map[EventID]*Event); ok {
-				return voters
-			}
-		}
-	}
-
-	roundInfo, exists := fv.dag.Rounds[round]
-	if !exists {
+	// بررسی اینکه آیا این round قبلاً تصمیم گرفته شده
+	if fv.decidedRounds[round] {
 		return nil
 	}
 
-	// ذخیره در cache manager
-	cacheData := map[string]interface{}{
-		"voters": roundInfo.Witnesses,
+	// دریافت witnesses این round
+	witnesses := fv.getWitnesses(round)
+	if len(witnesses) == 0 {
+		return fmt.Errorf("no witnesses found for round %d", round)
 	}
-	fv.cacheManager.SetConsensusCache(round, cacheData)
-	return roundInfo.Witnesses
+
+	// شروع voting برای هر witness
+	for witnessID := range witnesses {
+		if fv.famousWitnesses[witnessID] {
+			continue // قبلاً famous شده
+		}
+
+		// شروع voting process
+		fv.startVotingForWitness(witnessID, round)
+	}
+
+	return nil
 }
 
-// getVoteForWitness دریافت رای یک voter برای یک witness
-func (fv *FameVoting) getVoteForWitness(voterID, witnessID EventID, round uint64) *Vote {
-	fv.mu.RLock()
-	defer fv.mu.RUnlock()
+// startVotingForWitness شروع voting برای یک witness خاص
+func (fv *FameVoting) startVotingForWitness(witnessID EventID, round uint64) {
+	// ایجاد vote برای این witness
+	voteKey := fmt.Sprintf("%x_%d", witnessID, round)
 
-	// ایجاد cache key
-	cacheKey := fmt.Sprintf("vote_%s_%s_%d", voterID, witnessID, round)
-
-	// بررسی cache manager
-	if cachedVote, exists := fv.cacheManager.GetVote(cacheKey); exists {
-		return cachedVote
+	if _, exists := fv.votes[voteKey]; exists {
+		return // قبلاً voting شروع شده
 	}
 
-	// بررسی cache محلی
-	if fv.state.Votes[voterID] == nil {
-		fv.state.Votes[voterID] = make(map[EventID]*Vote)
+	// محاسبه رأی بر اساس الگوریتم Lachesis
+	vote := fv.calculateVote(witnessID, round)
+	fv.votes[voteKey] = vote
+
+	// بررسی اینکه آیا consensus رسیده
+	if fv.checkConsensus(witnessID, round) {
+		fv.famousWitnesses[witnessID] = true
+		fv.decideRound(round)
 	}
-
-	if vote, exists := fv.state.Votes[voterID][witnessID]; exists {
-		// ذخیره در cache manager
-		fv.cacheManager.SetVote(cacheKey, vote)
-		return vote
-	}
-
-	// محاسبه رای جدید
-	vote := fv.calculateVote(voterID, witnessID, round)
-	fv.state.Votes[voterID][witnessID] = vote
-
-	// ذخیره در cache manager
-	fv.cacheManager.SetVote(cacheKey, vote)
-	return vote
 }
 
-// calculateVote محاسبه رای یک voter برای یک witness
-func (fv *FameVoting) calculateVote(voterID, witnessID EventID, round uint64) *Vote {
-	voter, _ := fv.dag.GetEvent(voterID)
-	witness, _ := fv.dag.GetEvent(witnessID)
+// calculateVote محاسبه رأی بر اساس الگوریتم Lachesis
+func (fv *FameVoting) calculateVote(witnessID EventID, round uint64) *Vote {
+	// الگوریتم Fame Voting از Fantom Opera:
+	// 1. بررسی تعداد events که این witness را می‌بینند
+	// 2. محاسبه نسبت events که رأی مثبت می‌دهند
+	// 3. تصمیم بر اساس threshold
 
-	if voter == nil || witness == nil {
-		return nil
+	// شمارش events که این witness را می‌بینند
+	seeCount := 0
+	yesCount := 0
+
+	fv.dag.mu.RLock()
+	for eventID, event := range fv.dag.Events {
+		if event.Round > round {
+			continue
+		}
+
+		// بررسی اینکه آیا این event این witness را می‌بیند
+		if fv.canSee(eventID, witnessID) {
+			seeCount++
+
+			// محاسبه رأی بر اساس الگوریتم Lachesis
+			if fv.shouldVoteYes(eventID, witnessID, round) {
+				yesCount++
+			}
+		}
 	}
+	fv.dag.mu.RUnlock()
 
-	// محاسبه رای بر اساس الگوریتم Lachesis کامل
-	vote := fv.computeVoteAdvanced(voter, witness, round)
+	// تصمیم بر اساس threshold (2/3 majority)
+	threshold := (seeCount * 2) / 3
+	isFamous := yesCount > threshold
 
 	return &Vote{
-		Vote:      vote,
-		Decided:   false, // در این مرحله تصمیم‌گیری نشده
-		Round:     round,
-		Weight:    fv.getVoterWeight(voterID),
-		VoterID:   voterID,
 		WitnessID: witnessID,
+		Round:     round,
+		Choice:    isFamous,
+		Decided:   true,
 	}
 }
 
-// computeVoteAdvanced محاسبه رای پیشرفته بر اساس الگوریتم Lachesis
-func (fv *FameVoting) computeVoteAdvanced(voter, witness *Event, round uint64) bool {
-	// الگوریتم پیشرفته Lachesis مطابق با Fantom:
-
-	// شرط 1: Visibility - voter باید witness را ببیند
-	if !fv.dag.IsAncestor(witness.Hash(), voter.Hash()) {
-		return false
-	}
-
-	// شرط 2: Lamport time consistency
-	if voter.Lamport <= witness.Lamport {
-		return false
-	}
-
-	// شرط 3: Round assignment - voter باید در round بعدی باشد
-	voterRound := voter.Lamport / uint64(2000) // 2 seconds
-	witnessRound := witness.Lamport / uint64(2000)
-
-	if voterRound <= witnessRound {
-		return false
-	}
-
-	// شرط 4: Byzantine fault tolerance conditions
-	return fv.checkByzantineConditions(voter, witness, round)
+// canSee بررسی اینکه آیا event A می‌تواند event B را ببیند
+func (fv *FameVoting) canSee(eventA, eventB EventID) bool {
+	// الگوریتم canSee از Fantom Opera
+	// بررسی اینکه آیا eventA ancestor از eventB است
+	return fv.dag.IsAncestor(eventA, eventB)
 }
 
-// checkByzantineConditions بررسی شرایط Byzantine fault tolerance
-func (fv *FameVoting) checkByzantineConditions(voter, witness *Event, round uint64) bool {
-	// بررسی اینکه آیا voter در round مناسب است
-	voterRound := voter.Lamport / uint64(2000)
-	if voterRound < round {
-		return false
-	}
+// shouldVoteYes بررسی اینکه آیا باید رأی مثبت داد
+func (fv *FameVoting) shouldVoteYes(voterID, witnessID EventID, round uint64) bool {
+	// الگوریتم رأی‌گیری از Fantom Opera
+	// بر اساس Lamport timestamp و round assignment
 
-	// بررسی اینکه آیا witness در round مناسب است
-	witnessRound := witness.Lamport / uint64(2000)
-	if witnessRound != round {
-		return false
-	}
-
-	// بررسی شرایط اضافی Byzantine
-	return fv.checkAdditionalByzantineConditions(voter, witness)
-}
-
-// checkAdditionalByzantineConditions بررسی شرایط اضافی Byzantine
-func (fv *FameVoting) checkAdditionalByzantineConditions(voter, witness *Event) bool {
-	// بررسی unique creator
-	if voter.CreatorID == witness.CreatorID {
-		return false
-	}
-
-	// بررسی Lamport time consistency
-	if voter.Lamport <= witness.Lamport {
-		return false
-	}
-
-	// بررسی visibility conditions
-	if !fv.dag.IsAncestor(witness.Hash(), voter.Hash()) {
-		return false
-	}
-
-	// بررسی consensus conditions
-	if !fv.checkConsensusConditions(voter, witness) {
-		return false
-	}
-
-	// بررسی شرایط پیشرفته Byzantine
-	return fv.AdvancedByzantineConditions(voter, witness, voter.Lamport/uint64(2000))
-}
-
-// checkConsensusConditions بررسی شرایط اجماع
-func (fv *FameVoting) checkConsensusConditions(voter, witness *Event) bool {
-	// بررسی اینکه آیا voter می‌تواند witness را در DAG ببیند
-	if !fv.dag.IsAncestor(witness.Hash(), voter.Hash()) {
-		return false
-	}
-
-	// بررسی اینکه آیا voter در round بعدی است
-	voterRound := voter.Lamport / uint64(2000)
-	witnessRound := witness.Lamport / uint64(2000)
-
-	if voterRound <= witnessRound {
-		return false
-	}
-
-	// بررسی شرایط اضافی اجماع
-	return true
-}
-
-// AdvancedByzantineConditions شرایط پیشرفته Byzantine fault tolerance
-func (fv *FameVoting) AdvancedByzantineConditions(voter, witness *Event, round uint64) bool {
-	// شرط 1: Dynamic validator set validation
-	if !fv.validateDynamicValidatorSet(voter, witness, round) {
-		return false
-	}
-
-	// شرط 2: Advanced time consensus
-	if !fv.validateAdvancedTimeConsensus(voter, witness, round) {
-		return false
-	}
-
-	// شرط 3: Advanced visibility conditions
-	if !fv.validateAdvancedVisibility(voter, witness, round) {
-		return false
-	}
-
-	// شرط 4: Consensus weight validation
-	if !fv.validateConsensusWeight(voter, witness, round) {
-		return false
-	}
-
-	return true
-}
-
-// validateDynamicValidatorSet اعتبارسنجی dynamic validator set
-func (fv *FameVoting) validateDynamicValidatorSet(voter, witness *Event, round uint64) bool {
-	// بررسی تغییرات validator set در طول زمان
-	voterTime := voter.Lamport
-	witnessTime := witness.Lamport
-
-	// اگر فاصله زمانی زیاد باشد، validator set ممکن است تغییر کرده باشد
-	if voterTime-witnessTime > uint64(10000) { // 10 seconds
-		return false
-	}
-
-	// بررسی اینکه آیا voter و witness در validator set مشابه هستند
-	return fv.checkValidatorSetConsistency(voter, witness, round)
-}
-
-// validateAdvancedTimeConsensus اعتبارسنجی اجماع زمانی پیشرفته
-func (fv *FameVoting) validateAdvancedTimeConsensus(voter, witness *Event, round uint64) bool {
-	// محاسبه median time از تمام witnesses در round
-	medianTime := fv.calculateMedianTimeForRound(round)
-
-	// بررسی اینکه آیا witness در محدوده زمانی مناسب است
-	witnessTime := witness.Lamport
-	timeWindow := uint64(2000) // 2 seconds
-
-	if abs(int64(witnessTime)-int64(medianTime)) > int64(timeWindow) {
-		return false
-	}
-
-	return true
-}
-
-// validateAdvancedVisibility اعتبارسنجی visibility پیشرفته
-func (fv *FameVoting) validateAdvancedVisibility(voter, witness *Event, round uint64) bool {
-	// بررسی visibility با وزن
-	visibilityWeight := fv.calculateVisibilityWeight(voter, witness)
-
-	// باید حداقل 2/3 وزن کل را داشته باشد
-	totalWeight := fv.calculateTotalWeightForRound(round)
-	requiredWeight := new(big.Int).Mul(totalWeight, big.NewInt(2))
-	requiredWeight.Div(requiredWeight, big.NewInt(3))
-
-	return visibilityWeight.Cmp(requiredWeight) >= 0
-}
-
-// validateConsensusWeight اعتبارسنجی وزن اجماع
-func (fv *FameVoting) validateConsensusWeight(voter, witness *Event, round uint64) bool {
-	// محاسبه وزن اجماع بر اساس stake و reputation
-	consensusWeight := fv.calculateConsensusWeight(voter, witness, round)
-
-	// باید حداقل 2/3 وزن کل را داشته باشد
-	totalWeight := fv.calculateTotalWeightForRound(round)
-	requiredWeight := new(big.Int).Mul(totalWeight, big.NewInt(2))
-	requiredWeight.Div(requiredWeight, big.NewInt(3))
-
-	return consensusWeight.Cmp(requiredWeight) >= 0
-}
-
-// calculateMedianTimeForRound محاسبه median time برای یک round
-func (fv *FameVoting) calculateMedianTimeForRound(round uint64) uint64 {
-	roundInfo, exists := fv.dag.Rounds[round]
-	if !exists {
-		return 0
-	}
-
-	var times []uint64
-	for _, witness := range roundInfo.Witnesses {
-		times = append(times, witness.Lamport)
-	}
-
-	if len(times) == 0 {
-		return 0
-	}
-
-	// مرتب‌سازی times
-	sort.Slice(times, func(i, j int) bool {
-		return times[i] < times[j]
-	})
-
-	// محاسبه median
-	n := len(times)
-	if n%2 == 0 {
-		return (times[n/2-1] + times[n/2]) / 2
-	}
-	return times[n/2]
-}
-
-// calculateVisibilityWeight محاسبه وزن visibility
-func (fv *FameVoting) calculateVisibilityWeight(voter, witness *Event) *big.Int {
-	weight := big.NewInt(0)
-
-	// بررسی visibility با تمام events
-	for _, event := range fv.dag.Events {
-		if fv.dag.IsAncestor(witness.Hash(), event.Hash()) {
-			eventWeight := fv.getVoterWeight(event.Hash())
-			weight.Add(weight, eventWeight)
-		}
-	}
-
-	return weight
-}
-
-// calculateTotalWeightForRound محاسبه وزن کل برای یک round
-func (fv *FameVoting) calculateTotalWeightForRound(round uint64) *big.Int {
-	roundInfo, exists := fv.dag.Rounds[round]
-	if !exists {
-		return big.NewInt(0)
-	}
-
-	totalWeight := big.NewInt(0)
-	for _, witness := range roundInfo.Witnesses {
-		weight := fv.getVoterWeight(witness.Hash())
-		totalWeight.Add(totalWeight, weight)
-	}
-
-	return totalWeight
-}
-
-// calculateConsensusWeight محاسبه وزن اجماع
-func (fv *FameVoting) calculateConsensusWeight(voter, witness *Event, round uint64) *big.Int {
-	weight := big.NewInt(0)
-
-	// وزن بر اساس stake
-	stakeWeight := fv.getVoterWeight(voter.Hash())
-	weight.Add(weight, stakeWeight)
-
-	// وزن بر اساس reputation
-	reputationWeight := fv.calculateReputationWeight(voter, round)
-	weight.Add(weight, reputationWeight)
-
-	// وزن بر اساس consistency
-	consistencyWeight := fv.calculateConsistencyWeight(voter, witness, round)
-	weight.Add(weight, consistencyWeight)
-
-	return weight
-}
-
-// calculateReputationWeight محاسبه وزن reputation
-func (fv *FameVoting) calculateReputationWeight(voter *Event, round uint64) *big.Int {
-	// محاسبه reputation بر اساس تاریخچه voting
-	reputation := big.NewInt(0)
-
-	// بررسی voting history
-	for r := uint64(0); r < round; r++ {
-		if fv.hasConsistentVoting(voter, r) {
-			reputation.Add(reputation, big.NewInt(1000))
-		}
-	}
-
-	return reputation
-}
-
-// calculateConsistencyWeight محاسبه وزن consistency
-func (fv *FameVoting) calculateConsistencyWeight(voter, witness *Event, round uint64) *big.Int {
-	// محاسبه consistency بر اساس voting pattern
-	consistency := big.NewInt(0)
-
-	// بررسی consistency با سایر voters
-	for _, event := range fv.dag.Events {
-		if event.Hash() != voter.Hash() && event.Lamport < voter.Lamport {
-			if fv.hasConsistentVotingWith(event, voter, round) {
-				consistency.Add(consistency, big.NewInt(500))
-			}
-		}
-	}
-
-	return consistency
-}
-
-// hasConsistentVoting بررسی consistency voting
-func (fv *FameVoting) hasConsistentVoting(voter *Event, round uint64) bool {
-	// بررسی اینکه آیا voter در این round voting consistent داشته است
-	roundInfo, exists := fv.dag.Rounds[round]
+	voter, exists := fv.dag.GetEvent(voterID)
 	if !exists {
 		return false
 	}
 
-	consistentVotes := 0
+	witness, exists := fv.dag.GetEvent(witnessID)
+	if !exists {
+		return false
+	}
+
+	// رأی مثبت اگر voter در round بالاتر از witness باشد
+	return voter.Round > witness.Round
+}
+
+// checkConsensus بررسی رسیدن به consensus
+func (fv *FameVoting) checkConsensus(witnessID EventID, round uint64) bool {
+	voteKey := fmt.Sprintf("%x_%d", witnessID, round)
+	_, exists := fv.votes[voteKey]
+	if !exists {
+		return false
+	}
+
+	// بررسی تعداد رأی‌های مثبت
+	yesVotes := 0
 	totalVotes := 0
 
-	for _, witness := range roundInfo.Witnesses {
-		vote := fv.getVoteForWitness(voter.Hash(), witness.Hash(), round)
-		if vote != nil {
+	for _, v := range fv.votes {
+		if v.Round == round && v.WitnessID == witnessID {
 			totalVotes++
-			if vote.Vote {
-				consistentVotes++
+			if v.Choice {
+				yesVotes++
 			}
 		}
 	}
 
-	if totalVotes == 0 {
-		return false
-	}
-
-	// باید حداقل 80% consistency داشته باشد
-	return float64(consistentVotes)/float64(totalVotes) >= 0.8
+	// Consensus اگر 2/3 رأی مثبت باشد
+	threshold := (totalVotes * 2) / 3
+	return yesVotes > threshold
 }
 
-// hasConsistentVotingWith بررسی consistency با voter دیگر
-func (fv *FameVoting) hasConsistentVotingWith(voter1, voter2 *Event, round uint64) bool {
-	roundInfo, exists := fv.dag.Rounds[round]
-	if !exists {
-		return false
-	}
+// decideRound تصمیم‌گیری برای یک round
+func (fv *FameVoting) decideRound(round uint64) {
+	fv.decidedRounds[round] = true
 
-	consistentVotes := 0
-	totalVotes := 0
+	// به‌روزرسانی round info
+	if roundInfo, exists := fv.rounds[round]; exists {
+		roundInfo.Decided = true
 
-	for _, witness := range roundInfo.Witnesses {
-		vote1 := fv.getVoteForWitness(voter1.Hash(), witness.Hash(), round)
-		vote2 := fv.getVoteForWitness(voter2.Hash(), witness.Hash(), round)
-
-		if vote1 != nil && vote2 != nil {
-			totalVotes++
-			if vote1.Vote == vote2.Vote {
-				consistentVotes++
+		// اضافه کردن famous witnesses به round
+		for witnessID := range fv.famousWitnesses {
+			if witness, exists := fv.dag.GetEvent(witnessID); exists {
+				if witness.Round == round {
+					roundInfo.Witnesses[witnessID] = witness
+				}
 			}
 		}
 	}
 
-	if totalVotes == 0 {
+	fmt.Printf("🎯 Round %d decided with %d famous witnesses\n",
+		round, len(fv.getFamousWitnesses(round)))
+}
+
+// getWitnesses دریافت witnesses یک round
+func (fv *FameVoting) getWitnesses(round uint64) map[EventID]*Event {
+	witnesses := make(map[EventID]*Event)
+
+	fv.dag.mu.RLock()
+	for eventID, event := range fv.dag.Events {
+		if event.Round == round && fv.isWitness(event, round) {
+			witnesses[eventID] = event
+		}
+	}
+	fv.dag.mu.RUnlock()
+
+	return witnesses
+}
+
+// isWitness بررسی اینکه آیا یک event witness است
+func (fv *FameVoting) isWitness(event *Event, round uint64) bool {
+	// الگوریتم تشخیص witness از Fantom Opera
+	// یک event witness است اگر:
+	// 1. در این round باشد
+	// 2. اولین event از creator خود در این round باشد
+
+	if event.Round != round {
 		return false
 	}
 
-	// باید حداقل 70% consistency داشته باشد
-	return float64(consistentVotes)/float64(totalVotes) >= 0.7
+	// بررسی اینکه آیا اولین event از این creator در این round است
+	for _, otherEvent := range fv.dag.Events {
+		if otherEvent.CreatorID == event.CreatorID &&
+			otherEvent.Round == round &&
+			otherEvent.Lamport < event.Lamport {
+			return false
+		}
+	}
+
+	return true
 }
 
-// checkValidatorSetConsistency بررسی consistency validator set
-func (fv *FameVoting) checkValidatorSetConsistency(voter, witness *Event, round uint64) bool {
-	// بررسی اینکه آیا voter و witness در validator set مشابه هستند
-	voterValidators := fv.getValidatorsForEvent(voter)
-	witnessValidators := fv.getValidatorsForEvent(witness)
+// getFamousWitnesses دریافت famous witnesses یک round
+func (fv *FameVoting) getFamousWitnesses(round uint64) map[EventID]*Event {
+	famous := make(map[EventID]*Event)
 
-	// محاسبه overlap
-	overlap := 0
-	for _, v1 := range voterValidators {
-		for _, v2 := range witnessValidators {
-			if v1 == v2 {
-				overlap++
-				break
+	for witnessID, isFamous := range fv.famousWitnesses {
+		if isFamous {
+			if witness, exists := fv.dag.GetEvent(witnessID); exists {
+				if witness.Round == round {
+					famous[witnessID] = witness
+				}
 			}
 		}
 	}
 
-	totalValidators := len(voterValidators)
-	if totalValidators == 0 {
-		return false
-	}
-
-	// باید حداقل 80% overlap داشته باشد
-	return float64(overlap)/float64(totalValidators) >= 0.8
+	return famous
 }
 
-// getValidatorsForEvent دریافت validators برای یک event
-func (fv *FameVoting) getValidatorsForEvent(event *Event) []string {
-	// در نسخه کامل، این از validator set گرفته می‌شود
-	// فعلاً یک لیست نمونه برمی‌گردانیم
-	return []string{"NodeA", "NodeB", "NodeC"}
-}
+// GetVoteStats آمار voting
+func (fv *FameVoting) GetVoteStats() map[string]interface{} {
+	fv.mu.RLock()
+	defer fv.mu.RUnlock()
 
-// abs محاسبه قدر مطلق
-func abs(x int64) int64 {
-	if x < 0 {
-		return -x
-	}
-	return x
-}
-
-// getVoterWeight دریافت وزن یک voter
-func (fv *FameVoting) getVoterWeight(voterID EventID) *big.Int {
-	// بررسی cache
-	if weight, exists := fv.state.Weights[voterID]; exists {
-		return weight
-	}
-
-	// محاسبه وزن بر اساس stake
-	voter, _ := fv.dag.GetEvent(voterID)
-	if voter == nil {
-		return big.NewInt(1) // وزن پیش‌فرض
-	}
-
-	// در نسخه کامل، این از validator set گرفته می‌شود
-	weight := big.NewInt(1000000) // 1M tokens default
-	fv.state.Weights[voterID] = weight
-	return weight
-}
-
-// GetFamousWitnesses دریافت famous witnesses یک round
-func (fv *FameVoting) GetFamousWitnesses(round uint64) []*Event {
-	roundInfo, exists := fv.dag.Rounds[round]
-	if !exists {
-		return nil
-	}
-
-	var famousWitnesses []*Event
-	for _, witness := range roundInfo.Witnesses {
-		if witness.IsFamous != nil && *witness.IsFamous {
-			famousWitnesses = append(famousWitnesses, witness)
-		}
-	}
-
-	return famousWitnesses
-}
-
-// getLatestRound دریافت آخرین round
-func (fv *FameVoting) getLatestRound() uint64 {
-	maxRound := uint64(0)
-	for round := range fv.dag.Rounds {
-		if round > maxRound {
-			maxRound = round
-		}
-	}
-	return maxRound
-}
-
-// IsDecided بررسی اینکه آیا fame voting برای یک witness تصمیم‌گیری شده
-func (fv *FameVoting) IsDecided(witnessID EventID) bool {
-	return fv.state.Decided[witnessID]
-}
-
-// GetVoteStats آمار آراء برای یک witness
-func (fv *FameVoting) GetVoteStats(witnessID EventID, round uint64) (trueVotes, falseVotes, totalVotes int) {
-	voters := fv.getVotersForRound(round)
-
-	for voterID := range voters {
-		vote := fv.getVoteForWitness(voterID, witnessID, round)
-		if vote == nil {
-			continue
-		}
-
-		totalVotes++
-		if vote.Vote {
-			trueVotes++
-		} else {
-			falseVotes++
-		}
-	}
-
-	return
-}
-
-// GetWeightedVoteStats آمار آراء با وزن
-func (fv *FameVoting) GetWeightedVoteStats(witnessID EventID, round uint64) (trueWeight, falseWeight, totalWeight *big.Int) {
-	voters := fv.getVotersForRound(round)
-
-	trueWeight = big.NewInt(0)
-	falseWeight = big.NewInt(0)
-	totalWeight = big.NewInt(0)
-
-	for voterID := range voters {
-		vote := fv.getVoteForWitness(voterID, witnessID, round)
-		if vote == nil {
-			continue
-		}
-
-		weight := fv.getVoterWeight(voterID)
-		totalWeight.Add(totalWeight, weight)
-
-		if vote.Vote {
-			trueWeight.Add(trueWeight, weight)
-		} else {
-			falseWeight.Add(falseWeight, weight)
-		}
-	}
-
-	return
-}
-
-// GetFameVotingStats آمار کلی fame voting
-func (fv *FameVoting) GetFameVotingStats() map[string]interface{} {
 	stats := make(map[string]interface{})
+	stats["total_votes"] = len(fv.votes)
+	stats["famous_witnesses"] = len(fv.famousWitnesses)
+	stats["decided_rounds"] = len(fv.decidedRounds)
 
-	totalDecided := 0
-	totalFamous := 0
-	totalNotFamous := 0
+	// آمار per round
+	roundStats := make(map[uint64]map[string]interface{})
+	for round := range fv.rounds {
+		witnesses := fv.getWitnesses(round)
+		famous := fv.getFamousWitnesses(round)
 
-	for _, event := range fv.dag.Events {
-		if fv.state.Decided[event.Hash()] {
-			totalDecided++
-			if event.IsFamous != nil && *event.IsFamous {
-				totalFamous++
-			} else {
-				totalNotFamous++
-			}
+		roundStats[round] = map[string]interface{}{
+			"total_witnesses":  len(witnesses),
+			"famous_witnesses": len(famous),
+			"decided":          fv.decidedRounds[round],
 		}
 	}
-
-	stats["total_decided"] = totalDecided
-	stats["total_famous"] = totalFamous
-	stats["total_not_famous"] = totalNotFamous
-	if totalDecided > 0 {
-		stats["fame_ratio"] = float64(totalFamous) / float64(totalDecided)
-	} else {
-		stats["fame_ratio"] = 0.0
-	}
-
-	// آمار cache
-	if fv.cacheManager != nil {
-		cacheStats := fv.cacheManager.GetCacheStats()
-		for key, value := range cacheStats {
-			stats["cache_"+key] = value
-		}
-	}
+	stats["round_stats"] = roundStats
 
 	return stats
 }
 
-// GetFamousWitnessesByRound دریافت famous witnesses بر اساس round
-func (fv *FameVoting) GetFamousWitnessesByRound(round uint64) map[EventID]*Event {
-	return fv.state.FamousWitnesses[round]
-}
+// Reset بازنشانی برای تست
+func (fv *FameVoting) Reset() {
+	fv.mu.Lock()
+	defer fv.mu.Unlock()
 
-// IsWitnessFamous بررسی اینکه آیا یک witness famous است
-func (fv *FameVoting) IsWitnessFamous(witnessID EventID) bool {
-	event, _ := fv.dag.GetEvent(witnessID)
-	if event == nil {
-		return false
-	}
-	return event.IsFamous != nil && *event.IsFamous
+	fv.votes = make(map[string]*Vote)
+	fv.voteCount = make(map[string]int)
+	fv.famousWitnesses = make(map[EventID]bool)
+	fv.decidedRounds = make(map[uint64]bool)
 }
