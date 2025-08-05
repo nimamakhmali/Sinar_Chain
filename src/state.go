@@ -15,7 +15,42 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
-// StateDB مدیریت state مشابه Fantom
+// SINAR Token Configuration
+const (
+	SINAR_SYMBOL        = "SINAR"
+	SINAR_DECIMALS      = 18
+	SINAR_TOTAL_SUPPLY  = "1000000000000000000000000000" // 1 Billion SINAR (with 18 decimals)
+	SINAR_INITIAL_PRICE = "0.01"                         // $0.01 USD
+)
+
+// SINARToken اطلاعات ارز بومی سینار
+type SINARToken struct {
+	Symbol        string
+	Decimals      uint8
+	TotalSupply   *big.Int
+	CurrentSupply *big.Int
+	Price         *big.Float
+	Creator       common.Address
+	CreatedAt     uint64
+}
+
+// NewSINARToken ایجاد ارز بومی سینار
+func NewSINARToken() *SINARToken {
+	totalSupply, _ := new(big.Int).SetString(SINAR_TOTAL_SUPPLY, 10)
+	price, _ := new(big.Float).SetString(SINAR_INITIAL_PRICE)
+
+	return &SINARToken{
+		Symbol:        SINAR_SYMBOL,
+		Decimals:      SINAR_DECIMALS,
+		TotalSupply:   totalSupply,
+		CurrentSupply: big.NewInt(0),
+		Price:         price,
+		Creator:       common.HexToAddress("0x0000000000000000000000000000000000000000"), // Zero address for native token
+		CreatedAt:     uint64(time.Now().Unix()),
+	}
+}
+
+// StateDB مدیریت state مشابه Fantom Opera
 type StateDB struct {
 	mu sync.RWMutex
 
@@ -40,6 +75,9 @@ type StateDB struct {
 	// Governance state
 	proposals map[uint64]*Proposal
 	votes     map[uint64]map[common.Address]*StateVote
+
+	// Native SINAR Token
+	sinarToken *SINARToken
 
 	// State root cache
 	stateRootCache common.Hash
@@ -160,6 +198,7 @@ func NewStateDB() *StateDB {
 		delegations:     make(map[common.Address]map[common.Address]*big.Int),
 		proposals:       make(map[uint64]*Proposal),
 		votes:           make(map[uint64]map[common.Address]*StateVote),
+		sinarToken:      NewSINARToken(),
 		config:          config,
 		stateRootDirty:  true,
 		memoryOptimizer: memoryOptimizer,
@@ -681,6 +720,114 @@ func (s *StateDB) GetStateStats() map[string]interface{} {
 	}
 
 	return stats
+}
+
+// GetSINARBalance دریافت موجودی سینار
+func (s *StateDB) GetSINARBalance(address common.Address) *big.Int {
+	account := s.GetAccount(address)
+	return new(big.Int).Set(account.Balance)
+}
+
+// SetSINARBalance تنظیم موجودی سینار
+func (s *StateDB) SetSINARBalance(address common.Address, balance *big.Int) {
+	account := s.GetAccount(address)
+	account.Balance = new(big.Int).Set(balance)
+
+	// به‌روزرسانی current supply
+	s.sinarToken.CurrentSupply = s.calculateTotalSINARSupply()
+}
+
+// TransferSINAR انتقال سینار
+func (s *StateDB) TransferSINAR(from, to common.Address, amount *big.Int) error {
+	// بررسی موجودی
+	fromBalance := s.GetSINARBalance(from)
+	if fromBalance.Cmp(amount) < 0 {
+		return fmt.Errorf("insufficient SINAR balance")
+	}
+
+	// کسر از فرستنده
+	s.SetSINARBalance(from, new(big.Int).Sub(fromBalance, amount))
+
+	// اضافه کردن به گیرنده
+	toBalance := s.GetSINARBalance(to)
+	s.SetSINARBalance(to, new(big.Int).Add(toBalance, amount))
+
+	fmt.Printf("💰 SINAR Transfer: %s SINAR from %s to %s\n",
+		amount.String(), from.Hex(), to.Hex())
+
+	return nil
+}
+
+// MintSINAR ایجاد سینار جدید (فقط برای rewards)
+func (s *StateDB) MintSINAR(to common.Address, amount *big.Int) error {
+	// بررسی اینکه آیا از total supply تجاوز می‌کند
+	newSupply := new(big.Int).Add(s.sinarToken.CurrentSupply, amount)
+	if newSupply.Cmp(s.sinarToken.TotalSupply) > 0 {
+		return fmt.Errorf("minting would exceed total supply")
+	}
+
+	// اضافه کردن به موجودی
+	currentBalance := s.GetSINARBalance(to)
+	s.SetSINARBalance(to, new(big.Int).Add(currentBalance, amount))
+
+	// به‌روزرسانی current supply
+	s.sinarToken.CurrentSupply = newSupply
+
+	fmt.Printf("🪙 SINAR Minted: %s SINAR to %s\n", amount.String(), to.Hex())
+	return nil
+}
+
+// BurnSINAR سوزاندن سینار
+func (s *StateDB) BurnSINAR(from common.Address, amount *big.Int) error {
+	// بررسی موجودی
+	currentBalance := s.GetSINARBalance(from)
+	if currentBalance.Cmp(amount) < 0 {
+		return fmt.Errorf("insufficient SINAR balance for burning")
+	}
+
+	// کسر از موجودی
+	s.SetSINARBalance(from, new(big.Int).Sub(currentBalance, amount))
+
+	// کاهش current supply
+	s.sinarToken.CurrentSupply = new(big.Int).Sub(s.sinarToken.CurrentSupply, amount)
+
+	fmt.Printf("🔥 SINAR Burned: %s SINAR from %s\n", amount.String(), from.Hex())
+	return nil
+}
+
+// GetSINARInfo دریافت اطلاعات ارز سینار
+func (s *StateDB) GetSINARInfo() map[string]interface{} {
+	return map[string]interface{}{
+		"symbol":         s.sinarToken.Symbol,
+		"decimals":       s.sinarToken.Decimals,
+		"total_supply":   s.sinarToken.TotalSupply.String(),
+		"current_supply": s.sinarToken.CurrentSupply.String(),
+		"price_usd":      s.sinarToken.Price.String(),
+		"creator":        s.sinarToken.Creator.Hex(),
+		"created_at":     s.sinarToken.CreatedAt,
+	}
+}
+
+// calculateTotalSINARSupply محاسبه کل موجودی سینار
+func (s *StateDB) calculateTotalSINARSupply() *big.Int {
+	total := big.NewInt(0)
+
+	// جمع‌آوری موجودی تمام accounts
+	for _, account := range s.accounts {
+		total.Add(total, account.Balance)
+	}
+
+	return total
+}
+
+// GetSINARPrice دریافت قیمت سینار
+func (s *StateDB) GetSINARPrice() *big.Float {
+	return new(big.Float).Set(s.sinarToken.Price)
+}
+
+// SetSINARPrice تنظیم قیمت سینار
+func (s *StateDB) SetSINARPrice(price *big.Float) {
+	s.sinarToken.Price = new(big.Float).Set(price)
 }
 
 // MemoryOptimizer بهینه‌سازی حافظه
