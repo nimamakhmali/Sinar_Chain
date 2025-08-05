@@ -10,7 +10,7 @@ import (
 type DAG struct {
 	Events map[EventID]*Event
 	Rounds RoundTable
-	Votes  VoteRecord
+	Votes  map[string]*Vote
 	mu     sync.RWMutex
 }
 
@@ -18,7 +18,7 @@ func NewDAG() *DAG {
 	return &DAG{
 		Events: make(map[EventID]*Event),
 		Rounds: make(RoundTable),
-		Votes:  make(VoteRecord),
+		Votes:  make(map[string]*Vote),
 	}
 }
 
@@ -41,6 +41,13 @@ func (d *DAG) GetEvent(id EventID) (*Event, bool) {
 	defer d.mu.RUnlock()
 	e, ok := d.Events[id]
 	return e, ok
+}
+
+// GetFameVoting دریافت FameVoting instance
+func (d *DAG) GetFameVoting() *FameVoting {
+	// در نسخه کامل، این از consensus engine گرفته می‌شود
+	// فعلاً یک instance جدید برمی‌گردانیم
+	return NewFameVoting(d)
 }
 
 func (d *DAG) GetParents(e *Event) ([]*Event, error) {

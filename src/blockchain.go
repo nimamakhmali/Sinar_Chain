@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/ecdsa"
 	"fmt"
+	"math/big"
 	"sort"
 	"sync"
 	"time"
@@ -31,6 +32,9 @@ type BlockHeader struct {
 	CreatedAt   time.Time
 	Creator     string
 	Signature   []byte
+	GasLimit    uint64
+	GasUsed     uint64
+	BaseFee     *big.Int
 }
 
 type Blockchain struct {
@@ -40,6 +44,8 @@ type Blockchain struct {
 	dag          *DAG
 	evmProcessor *EVMProcessor
 	currentState *state.StateDB
+	stateDB      *StateDB
+	txPool       *TransactionPool
 }
 
 func NewBlockchain(dag *DAG) *Blockchain {
@@ -48,6 +54,8 @@ func NewBlockchain(dag *DAG) *Blockchain {
 		dag:          dag,
 		evmProcessor: NewEVMProcessor(),
 		currentState: nil, // Will be initialized when first block is processed
+		stateDB:      NewStateDB(),
+		txPool:       NewTransactionPool(),
 	}
 }
 
@@ -80,6 +88,9 @@ func (bc *Blockchain) CreateBlock(atroposEvents []*Event, validator *Validator) 
 		AtroposTime: medianTime,
 		CreatedAt:   time.Now(),
 		Creator:     validator.ID,
+		GasLimit:    30000000, // 30M gas limit
+		GasUsed:     0,
+		BaseFee:     new(big.Int),
 	}
 
 	// محاسبه state root (در نسخه کامل باید با EVM ادغام شود)
@@ -196,6 +207,9 @@ func (bc *Blockchain) AddBlock(block *Block) error {
 	// به‌روزرسانی state
 	bc.currentState = newState
 
+	// به‌روزرسانی StateDB
+	bc.updateStateDB(block)
+
 	// اضافه کردن بلاک
 	blockHash := block.Hash()
 	bc.blocks[blockHash] = block
@@ -204,6 +218,40 @@ func (bc *Blockchain) AddBlock(block *Block) error {
 	fmt.Printf("Block %d added: %s (State Root: %s)\n",
 		block.Header.Number, blockHash.Hex(), bc.currentState.IntermediateRoot(true).Hex())
 	return nil
+}
+
+// updateStateDB به‌روزرسانی StateDB
+func (bc *Blockchain) updateStateDB(block *Block) {
+	// به‌روزرسانی StateDB با اطلاعات بلاک
+	for _, tx := range block.Transactions {
+		// پردازش تراکنش در StateDB
+		bc.processTransactionInStateDB(tx)
+	}
+}
+
+// processTransactionInStateDB پردازش تراکنش در StateDB
+func (bc *Blockchain) processTransactionInStateDB(tx *types.Transaction) {
+	// دریافت sender
+	signer := types.LatestSignerForChainID(bc.evmProcessor.chainConfig.ChainID)
+	from, err := types.Sender(signer, tx)
+	if err != nil {
+		return
+	}
+
+	// به‌روزرسانی موجودی
+	balance := bc.stateDB.GetBalance(from)
+	gasCost := new(big.Int).Mul(tx.GasPrice(), new(big.Int).SetUint64(tx.Gas()))
+	required := new(big.Int).Add(tx.Value(), gasCost)
+
+	if balance.Cmp(required) >= 0 {
+		bc.stateDB.SetBalance(from, new(big.Int).Sub(balance, required))
+
+		// انتقال به گیرنده
+		if tx.To() != nil {
+			toBalance := bc.stateDB.GetBalance(*tx.To())
+			bc.stateDB.SetBalance(*tx.To(), new(big.Int).Add(toBalance, tx.Value()))
+		}
+	}
 }
 
 func (bc *Blockchain) GetLatestBlockNumber() uint64 {
@@ -307,4 +355,109 @@ func (bc *Blockchain) isEventInBlock(eventID EventID) bool {
 		}
 	}
 	return false
+}
+
+// GetBlockByNumber دریافت بلاک بر اساس شماره
+func (bc *Blockchain) GetBlockByNumber(number uint64) *Block {
+	bc.mu.RLock()
+	defer bc.mu.RUnlock()
+
+	for _, block := range bc.blocks {
+		if block.Header.Number == number {
+			return block
+		}
+	}
+	return nil
+}
+
+// GetBlockRange دریافت بلاک‌ها در یک بازه
+func (bc *Blockchain) GetBlockRange(from, to uint64) []*Block {
+	bc.mu.RLock()
+	defer bc.mu.RUnlock()
+
+	var blocks []*Block
+	for _, block := range bc.blocks {
+		if block.Header.Number >= from && block.Header.Number <= to {
+			blocks = append(blocks, block)
+		}
+	}
+
+	// مرتب‌سازی بر اساس شماره بلاک
+	sort.Slice(blocks, func(i, j int) bool {
+		return blocks[i].Header.Number < blocks[j].Header.Number
+	})
+
+	return blocks
+}
+
+// GetTransactionByHash دریافت تراکنش بر اساس hash
+func (bc *Blockchain) GetTransactionByHash(txHash common.Hash) (*types.Transaction, *Block) {
+	bc.mu.RLock()
+	defer bc.mu.RUnlock()
+
+	for _, block := range bc.blocks {
+		for _, tx := range block.Transactions {
+			if tx.Hash() == txHash {
+				return tx, block
+			}
+		}
+	}
+	return nil, nil
+}
+
+// GetBlockStats آمار بلاک‌ها
+func (bc *Blockchain) GetBlockStats() map[string]interface{} {
+	bc.mu.RLock()
+	defer bc.mu.RUnlock()
+
+	stats := make(map[string]interface{})
+
+	stats["total_blocks"] = len(bc.blocks)
+	stats["latest_block_number"] = bc.GetLatestBlockNumber()
+
+	if latestBlock := bc.GetLatestBlock(); latestBlock != nil {
+		stats["latest_block_hash"] = latestBlock.Hash().Hex()
+		stats["latest_block_time"] = latestBlock.Header.CreatedAt
+		stats["latest_block_transactions"] = len(latestBlock.Transactions)
+		stats["latest_block_events"] = len(latestBlock.Events)
+	}
+
+	return stats
+}
+
+// GetStateDB دریافت StateDB
+func (bc *Blockchain) GetStateDB() *StateDB {
+	return bc.stateDB
+}
+
+// GetEVMProcessor دریافت EVM Processor
+func (bc *Blockchain) GetEVMProcessor() *EVMProcessor {
+	return bc.evmProcessor
+}
+
+// GetTransactionPool دریافت Transaction Pool
+func (bc *Blockchain) GetTransactionPool() *TransactionPool {
+	return bc.txPool
+}
+
+// Reset بازنشانی block برای استفاده مجدد در pool
+func (b *Block) Reset() {
+	// پاک کردن header
+	b.Header.Number = 0
+	b.Header.ParentHash = common.Hash{}
+	b.Header.Root = common.Hash{}
+	b.Header.AtroposTime = 0
+	b.Header.CreatedAt = time.Time{}
+	b.Header.Creator = ""
+	b.Header.Signature = nil
+	b.Header.GasLimit = 0
+	b.Header.GasUsed = 0
+	b.Header.BaseFee = nil
+
+	// پاک کردن transactions و events
+	b.Transactions = nil
+	b.Events = nil
+
+	// پاک کردن hash cache
+	b.hash = common.Hash{}
 }
