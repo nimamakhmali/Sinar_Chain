@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 import (
 	"crypto/ecdsa"
@@ -55,6 +55,13 @@ func main() {
 		log.Fatal("Failed to start network:", err)
 	}
 
+	// توزیع اولیه ارز سینار
+	fmt.Println("🚀 Initializing SINAR token distribution...")
+	if err := stateDB.InitializeSINARDistribution(); err != nil {
+		log.Fatalf("Failed to initialize SINAR distribution: %v", err)
+	}
+	fmt.Println("✅ SINAR token distribution completed!")
+
 	// شروع API Server در goroutine جداگانه
 	go func() {
 		if err := apiServer.Start(); err != nil {
@@ -76,7 +83,9 @@ func main() {
 
 	// نمایش اطلاعات شبکه
 	displayNetworkInfo(consensusEngine, networkManager)
-
+	displayConsensusInfo(consensusEngine)
+	runMultiNodeTest()
+	runPerformanceTest(consensusEngine)
 	// نگه داشتن برنامه برای مدتی
 	fmt.Println("\n⏳ Running Sinar Chain for 60 seconds...")
 	time.Sleep(60 * time.Second)

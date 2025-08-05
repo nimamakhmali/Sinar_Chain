@@ -21,6 +21,14 @@ const (
 	SINAR_DECIMALS      = 18
 	SINAR_TOTAL_SUPPLY  = "1000000000000000000000000000" // 1 Billion SINAR (with 18 decimals)
 	SINAR_INITIAL_PRICE = "0.01"                         // $0.01 USD
+
+	// Initial Distribution Percentages
+	SINAR_TEAM_PERCENTAGE       = 15 // 15% for team and founders
+	SINAR_ECOSYSTEM_PERCENTAGE  = 25 // 25% for ecosystem development
+	SINAR_VALIDATORS_PERCENTAGE = 20 // 20% for initial validators
+	SINAR_LIQUIDITY_PERCENTAGE  = 10 // 10% for liquidity pools
+	SINAR_COMMUNITY_PERCENTAGE  = 20 // 20% for community rewards
+	SINAR_RESERVE_PERCENTAGE    = 10 // 10% for future development
 )
 
 // SINARToken اطلاعات ارز بومی سینار
@@ -32,6 +40,71 @@ type SINARToken struct {
 	Price         *big.Float
 	Creator       common.Address
 	CreatedAt     uint64
+}
+
+// InitialDistribution آدرس‌های اولیه برای توزیع سینار
+type InitialDistribution struct {
+	TeamWallets      []common.Address
+	EcosystemWallets []common.Address
+	ValidatorWallets []common.Address
+	LiquidityWallets []common.Address
+	CommunityWallets []common.Address
+	ReserveWallets   []common.Address
+}
+
+// NewInitialDistribution ایجاد توزیع اولیه
+func NewInitialDistribution() *InitialDistribution {
+	return &InitialDistribution{
+		// Team Wallets (15% = 150M SINAR)
+		TeamWallets: []common.Address{
+			common.HexToAddress("0x1111111111111111111111111111111111111111"), // Founder 1
+			common.HexToAddress("0x2222222222222222222222222222222222222222"), // Founder 2
+			common.HexToAddress("0x3333333333333333333333333333333333333333"), // CTO
+			common.HexToAddress("0x4444444444444444444444444444444444444444"), // Lead Developer
+			common.HexToAddress("0x5555555555555555555555555555555555555555"), // Marketing Lead
+		},
+
+		// Ecosystem Wallets (25% = 250M SINAR)
+		EcosystemWallets: []common.Address{
+			common.HexToAddress("0x6666666666666666666666666666666666666666"), // Development Fund
+			common.HexToAddress("0x7777777777777777777777777777777777777777"), // Partnership Fund
+			common.HexToAddress("0x8888888888888888888888888888888888888888"), // Research Fund
+			common.HexToAddress("0x9999999999999999999999999999999999999999"), // Education Fund
+			common.HexToAddress("0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"), // Innovation Fund
+		},
+
+		// Validator Wallets (20% = 200M SINAR)
+		ValidatorWallets: []common.Address{
+			common.HexToAddress("0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"), // Validator 1
+			common.HexToAddress("0xCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"), // Validator 2
+			common.HexToAddress("0xDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD"), // Validator 3
+			common.HexToAddress("0xEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE"), // Validator 4
+			common.HexToAddress("0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"), // Validator 5
+		},
+
+		// Liquidity Wallets (10% = 100M SINAR)
+		LiquidityWallets: []common.Address{
+			common.HexToAddress("0x1010101010101010101010101010101010101010"), // DEX Liquidity
+			common.HexToAddress("0x2020202020202020202020202020202020202020"), // Bridge Liquidity
+			common.HexToAddress("0x3030303030303030303030303030303030303030"), // Staking Pool
+		},
+
+		// Community Wallets (20% = 200M SINAR)
+		CommunityWallets: []common.Address{
+			common.HexToAddress("0x4040404040404040404040404040404040404040"), // Community Rewards
+			common.HexToAddress("0x5050505050505050505050505050505050505050"), // Airdrop Fund
+			common.HexToAddress("0x6060606060606060606060606060606060606060"), // Bug Bounty
+			common.HexToAddress("0x7070707070707070707070707070707070707070"), // Hackathon Prizes
+			common.HexToAddress("0x8080808080808080808080808080808080808080"), // Ambassador Program
+		},
+
+		// Reserve Wallets (10% = 100M SINAR)
+		ReserveWallets: []common.Address{
+			common.HexToAddress("0x9090909090909090909090909090909090909090"), // Emergency Fund
+			common.HexToAddress("0xA0A0A0A0A0A0A0A0A0A0A0A0A0A0A0A0A0A0A0A0"), // Future Development
+			common.HexToAddress("0xB0B0B0B0B0B0B0B0B0B0B0B0B0B0B0B0B0B0B0B0"), // Strategic Reserve
+		},
+	}
 }
 
 // NewSINARToken ایجاد ارز بومی سینار
@@ -828,6 +901,134 @@ func (s *StateDB) GetSINARPrice() *big.Float {
 // SetSINARPrice تنظیم قیمت سینار
 func (s *StateDB) SetSINARPrice(price *big.Float) {
 	s.sinarToken.Price = new(big.Float).Set(price)
+}
+
+// InitializeSINARDistribution توزیع اولیه سینار
+func (s *StateDB) InitializeSINARDistribution() error {
+	fmt.Println("🚀 Initializing SINAR token distribution...")
+
+	// محاسبه مقادیر توزیع
+	totalSupply, _ := new(big.Int).SetString(SINAR_TOTAL_SUPPLY, 10)
+
+	teamAmount := new(big.Int).Mul(totalSupply, big.NewInt(SINAR_TEAM_PERCENTAGE))
+	teamAmount.Div(teamAmount, big.NewInt(100))
+
+	ecosystemAmount := new(big.Int).Mul(totalSupply, big.NewInt(SINAR_ECOSYSTEM_PERCENTAGE))
+	ecosystemAmount.Div(ecosystemAmount, big.NewInt(100))
+
+	validatorAmount := new(big.Int).Mul(totalSupply, big.NewInt(SINAR_VALIDATORS_PERCENTAGE))
+	validatorAmount.Div(validatorAmount, big.NewInt(100))
+
+	liquidityAmount := new(big.Int).Mul(totalSupply, big.NewInt(SINAR_LIQUIDITY_PERCENTAGE))
+	liquidityAmount.Div(liquidityAmount, big.NewInt(100))
+
+	communityAmount := new(big.Int).Mul(totalSupply, big.NewInt(SINAR_COMMUNITY_PERCENTAGE))
+	communityAmount.Div(communityAmount, big.NewInt(100))
+
+	reserveAmount := new(big.Int).Mul(totalSupply, big.NewInt(SINAR_RESERVE_PERCENTAGE))
+	reserveAmount.Div(reserveAmount, big.NewInt(100))
+
+	// توزیع به Team Wallets
+	distribution := NewInitialDistribution()
+	s.distributeToWallets(distribution.TeamWallets, teamAmount, "Team")
+
+	// توزیع به Ecosystem Wallets
+	s.distributeToWallets(distribution.EcosystemWallets, ecosystemAmount, "Ecosystem")
+
+	// توزیع به Validator Wallets
+	s.distributeToWallets(distribution.ValidatorWallets, validatorAmount, "Validators")
+
+	// توزیع به Liquidity Wallets
+	s.distributeToWallets(distribution.LiquidityWallets, liquidityAmount, "Liquidity")
+
+	// توزیع به Community Wallets
+	s.distributeToWallets(distribution.CommunityWallets, communityAmount, "Community")
+
+	// توزیع به Reserve Wallets
+	s.distributeToWallets(distribution.ReserveWallets, reserveAmount, "Reserve")
+
+	// به‌روزرسانی current supply
+	s.sinarToken.CurrentSupply = s.calculateTotalSINARSupply()
+
+	fmt.Printf("✅ SINAR distribution completed! Total distributed: %s SINAR\n", s.sinarToken.CurrentSupply.String())
+	return nil
+}
+
+// distributeToWallets توزیع سینار به گروهی از آدرس‌ها
+func (s *StateDB) distributeToWallets(wallets []common.Address, totalAmount *big.Int, category string) {
+	if len(wallets) == 0 {
+		return
+	}
+
+	// تقسیم مساوی بین تمام آدرس‌ها
+	amountPerWallet := new(big.Int).Div(totalAmount, big.NewInt(int64(len(wallets))))
+	remainder := new(big.Int).Mod(totalAmount, big.NewInt(int64(len(wallets))))
+
+	for i, wallet := range wallets {
+		amount := new(big.Int).Set(amountPerWallet)
+
+		// اضافه کردن باقیمانده به آخرین آدرس
+		if i == len(wallets)-1 {
+			amount.Add(amount, remainder)
+		}
+
+		// تنظیم موجودی
+		s.SetSINARBalance(wallet, amount)
+
+		fmt.Printf("💰 %s Wallet %d: %s SINAR to %s\n",
+			category, i+1, amount.String(), wallet.Hex())
+	}
+}
+
+// GetDistributionInfo دریافت اطلاعات توزیع
+func (s *StateDB) GetDistributionInfo() map[string]interface{} {
+	distribution := NewInitialDistribution()
+
+	info := map[string]interface{}{
+		"team_wallets":      len(distribution.TeamWallets),
+		"ecosystem_wallets": len(distribution.EcosystemWallets),
+		"validator_wallets": len(distribution.ValidatorWallets),
+		"liquidity_wallets": len(distribution.LiquidityWallets),
+		"community_wallets": len(distribution.CommunityWallets),
+		"reserve_wallets":   len(distribution.ReserveWallets),
+
+		"team_percentage":      SINAR_TEAM_PERCENTAGE,
+		"ecosystem_percentage": SINAR_ECOSYSTEM_PERCENTAGE,
+		"validator_percentage": SINAR_VALIDATORS_PERCENTAGE,
+		"liquidity_percentage": SINAR_LIQUIDITY_PERCENTAGE,
+		"community_percentage": SINAR_COMMUNITY_PERCENTAGE,
+		"reserve_percentage":   SINAR_RESERVE_PERCENTAGE,
+	}
+
+	// محاسبه مقادیر واقعی
+	totalSupply, _ := new(big.Int).SetString(SINAR_TOTAL_SUPPLY, 10)
+
+	teamAmount := new(big.Int).Mul(totalSupply, big.NewInt(SINAR_TEAM_PERCENTAGE))
+	teamAmount.Div(teamAmount, big.NewInt(100))
+
+	ecosystemAmount := new(big.Int).Mul(totalSupply, big.NewInt(SINAR_ECOSYSTEM_PERCENTAGE))
+	ecosystemAmount.Div(ecosystemAmount, big.NewInt(100))
+
+	validatorAmount := new(big.Int).Mul(totalSupply, big.NewInt(SINAR_VALIDATORS_PERCENTAGE))
+	validatorAmount.Div(validatorAmount, big.NewInt(100))
+
+	liquidityAmount := new(big.Int).Mul(totalSupply, big.NewInt(SINAR_LIQUIDITY_PERCENTAGE))
+	liquidityAmount.Div(liquidityAmount, big.NewInt(100))
+
+	communityAmount := new(big.Int).Mul(totalSupply, big.NewInt(SINAR_COMMUNITY_PERCENTAGE))
+	communityAmount.Div(communityAmount, big.NewInt(100))
+
+	reserveAmount := new(big.Int).Mul(totalSupply, big.NewInt(SINAR_RESERVE_PERCENTAGE))
+	reserveAmount.Div(reserveAmount, big.NewInt(100))
+
+	info["team_amount"] = teamAmount.String()
+	info["ecosystem_amount"] = ecosystemAmount.String()
+	info["validator_amount"] = validatorAmount.String()
+	info["liquidity_amount"] = liquidityAmount.String()
+	info["community_amount"] = communityAmount.String()
+	info["reserve_amount"] = reserveAmount.String()
+
+	return info
 }
 
 // MemoryOptimizer بهینه‌سازی حافظه
