@@ -49,3 +49,15 @@ signature, err := ecdsa.SignASN1(rand.Reader, privateKey, hash)
 Witness Event
 
 Witness یک Event خاص در DAG است که اولین Event ساخته‌شده توسط یک نود در یک Round خاص است.
+
+
+
+
+
+
+تو الان داری پروژه ی من رو میبینی این پروژه یک شبکه ی بلاکچین دقیقا مشابه شبکه ی بلاکچین فانتوم هست دقیق از روی سورس کد شبکه ی فانتوم در حال توسعه هست
+@https://github.com/Fantom-foundation/go-lachesis.git 
+@https://github.com/Fantom-foundation/go-opera.git 
+قراره دقیق اون الگوریتم رو پیاده بکنیم 
+خب حالا من تا اینجای پروژه را نوشته ام 
+ازت میخواهم که سورس کدهای فانتوم را دقیق مطالعه کنی و بعد بیای تا باهم پروژه را پیش ببریم

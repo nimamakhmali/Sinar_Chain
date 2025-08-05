@@ -298,7 +298,7 @@ func main() {
 
 	// تنظیمات پیش‌فرض
 	config := &NetworkConfig{
-		Port:            "8080",
+		Port:            "8082",
 		ChainID:         1001, // Sinar Chain ID
 		BlockTime:       1 * time.Second,
 		MaxValidators:   100,

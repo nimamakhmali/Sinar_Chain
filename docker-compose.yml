@@ -1,0 +1,199 @@
+version: '3.8'
+
+services:
+  # Sinar Chain Node 1 (Main Node)
+  sinar-node-1:
+    build: .
+    container_name: sinar-node-1
+    ports:
+      - "8080:8080"
+      - "5050:5050"
+    environment:
+      - NODE_ID=1
+      - VALIDATOR_ID=Validator-1
+      - STAKE_AMOUNT=1000000
+      - ENABLE_MOBILE=true
+      - LOG_LEVEL=info
+    volumes:
+      - sinar-data-1:/app/data
+    networks:
+      - sinar-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/api/blockchain/info"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Sinar Chain Node 2 (Validator Node)
+  sinar-node-2:
+    build: .
+    container_name: sinar-node-2
+    ports:
+      - "8081:8080"
+      - "5051:5050"
+    environment:
+      - NODE_ID=2
+      - VALIDATOR_ID=Validator-2
+      - STAKE_AMOUNT=1000000
+      - ENABLE_MOBILE=false
+      - LOG_LEVEL=info
+    volumes:
+      - sinar-data-2:/app/data
+    networks:
+      - sinar-network
+    restart: unless-stopped
+    depends_on:
+      - sinar-node-1
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/api/blockchain/info"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Sinar Chain Node 3 (Mobile Validator Node)
+  sinar-node-3:
+    build: .
+    container_name: sinar-node-3
+    ports:
+      - "8082:8080"
+      - "5052:5050"
+    environment:
+      - NODE_ID=3
+      - VALIDATOR_ID=Mobile-Validator-1
+      - STAKE_AMOUNT=1000000
+      - ENABLE_MOBILE=true
+      - LOG_LEVEL=info
+    volumes:
+      - sinar-data-3:/app/data
+    networks:
+      - sinar-network
+    restart: unless-stopped
+    depends_on:
+      - sinar-node-1
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/api/blockchain/info"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Sinar Chain Node 4 (Regular Node)
+  sinar-node-4:
+    build: .
+    container_name: sinar-node-4
+    ports:
+      - "8083:8080"
+      - "5053:5050"
+    environment:
+      - NODE_ID=4
+      - VALIDATOR_ID=Validator-4
+      - STAKE_AMOUNT=1000000
+      - ENABLE_MOBILE=false
+      - LOG_LEVEL=info
+    volumes:
+      - sinar-data-4:/app/data
+    networks:
+      - sinar-network
+    restart: unless-stopped
+    depends_on:
+      - sinar-node-1
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/api/blockchain/info"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Sinar Chain Node 5 (Regular Node)
+  sinar-node-5:
+    build: .
+    container_name: sinar-node-5
+    ports:
+      - "8084:8080"
+      - "5054:5050"
+    environment:
+      - NODE_ID=5
+      - VALIDATOR_ID=Validator-5
+      - STAKE_AMOUNT=1000000
+      - ENABLE_MOBILE=false
+      - LOG_LEVEL=info
+    volumes:
+      - sinar-data-5:/app/data
+    networks:
+      - sinar-network
+    restart: unless-stopped
+    depends_on:
+      - sinar-node-1
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/api/blockchain/info"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Nginx Reverse Proxy (Optional)
+  nginx:
+    image: nginx:alpine
+    container_name: sinar-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - sinar-network
+    depends_on:
+      - sinar-node-1
+      - sinar-node-2
+      - sinar-node-3
+      - sinar-node-4
+      - sinar-node-5
+    restart: unless-stopped
+
+  # Redis Cache (Optional)
+  redis:
+    image: redis:alpine
+    container_name: sinar-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - sinar-network
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+
+  # PostgreSQL Database (Optional)
+  postgres:
+    image: postgres:13-alpine
+    container_name: sinar-postgres
+    environment:
+      POSTGRES_DB: sinar_chain
+      POSTGRES_USER: sinar
+      POSTGRES_PASSWORD: sinar_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - sinar-network
+    restart: unless-stopped
+
+volumes:
+  sinar-data-1:
+  sinar-data-2:
+  sinar-data-3:
+  sinar-data-4:
+  sinar-data-5:
+  redis-data:
+  postgres-data:
+
+networks:
+  sinar-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16 
