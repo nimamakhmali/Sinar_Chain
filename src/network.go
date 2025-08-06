@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"sync"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
@@ -711,18 +714,27 @@ func (nm *NetworkManager) GetNetworkStats() map[string]interface{} {
 	stats := make(map[string]interface{})
 
 	// آمار کلی
-	stats["total_peers"] = nm.stats.TotalPeers
+	stats["total_peers"] = len(nm.peers)
 	stats["active_peers"] = nm.stats.ActivePeers
 	stats["validators"] = nm.stats.Validators
 	stats["total_stake"] = nm.stats.TotalStake
+	stats["average_latency"] = nm.stats.AverageLatency.String()
 	stats["bandwidth_usage"] = nm.stats.BandwidthUsage
 	stats["message_queue_size"] = nm.stats.MessageQueueSize
 
-	// آمار peers
-	peerStats := make(map[string]interface{})
-	for peerID, peer := range nm.peers {
-		peerStats[peerID.String()] = map[string]interface{}{
+	// آمار Fantom-specific
+	stats["consensus_peers"] = nm.stats.ConsensusPeers
+	stats["sync_peers"] = nm.stats.SyncPeers
+	stats["block_height"] = nm.stats.BlockHeight
+	stats["network_version"] = nm.stats.NetworkVersion
+
+	// آمار per-peer
+	peerStats := make([]map[string]interface{}, 0)
+	for _, peer := range nm.peers {
+		peerStats = append(peerStats, map[string]interface{}{
+			"id":                 peer.ID.String(),
 			"address":            peer.Address,
+			"last_seen":          peer.LastSeen,
 			"is_validator":       peer.IsValidator,
 			"stake":              peer.Stake,
 			"score":              peer.Score,
@@ -731,19 +743,49 @@ func (nm *NetworkManager) GetNetworkStats() map[string]interface{} {
 			"connection_quality": peer.ConnectionQuality,
 			"bandwidth_usage":    peer.BandwidthUsage,
 			"message_count":      peer.MessageCount,
-			"last_seen":          peer.LastSeen,
-		}
+		})
 	}
 	stats["peers"] = peerStats
 
-	// آمار scoring
-	scoringStats := make(map[string]interface{})
-	for peerID, score := range nm.peerScoring.scores {
-		scoringStats[peerID.String()] = score
-	}
-	stats["peer_scores"] = scoringStats
-
 	return stats
+}
+
+// AddTransaction اضافه کردن تراکنش به شبکه
+func (nm *NetworkManager) AddTransaction(tx *types.Transaction) error {
+	// ایجاد event از تراکنش
+	event := &Event{
+		EventHeader: EventHeader{
+			CreatorID: "transaction",
+			Parents:   []EventID{}, // بعداً محاسبه می‌شود
+			Lamport:   uint64(time.Now().UnixNano()),
+			Epoch:     0,
+			Round:     0,
+			Height:    0,
+		},
+		Transactions: types.Transactions{tx},
+	}
+
+	// محاسبه هش
+	event.TxHash = event.CalculateTxHash()
+
+	// اضافه کردن به DAG
+	if err := nm.dag.AddEvent(event); err != nil {
+		return fmt.Errorf("failed to add transaction event: %v", err)
+	}
+
+	// انتشار در شبکه
+	if err := nm.GossipEvent(event); err != nil {
+		return fmt.Errorf("failed to gossip transaction: %v", err)
+	}
+
+	return nil
+}
+
+// GetBalance دریافت موجودی حساب
+func (nm *NetworkManager) GetBalance(address common.Address) *big.Int {
+	// فعلاً موجودی ثابت برمی‌گردانیم
+	// در آینده از StateDB استفاده می‌شود
+	return big.NewInt(1000000000000000000) // 1 ETH
 }
 
 // startPeerDiscovery شروع peer discovery - دقیقاً مطابق Fantom
