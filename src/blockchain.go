@@ -132,19 +132,18 @@ func calculateMedian(values []uint64) uint64 {
 }
 
 func (bc *Blockchain) calculateStateRoot(txs types.Transactions) common.Hash {
-	if bc.currentState == nil {
-		// اگر state وجود ندارد، از hash تراکنش‌ها استفاده کن
-		hasher := sha3.NewLegacyKeccak256()
-		for _, tx := range txs {
-			hasher.Write(tx.Hash().Bytes())
-		}
-		var hash common.Hash
-		copy(hash[:], hasher.Sum(nil))
-		return hash
+	if bc.currentState != nil {
+		// اگر state مقداردهی شده باشد، state root واقعی را از EVM/StateDB برگردان
+		return bc.currentState.IntermediateRoot(true)
 	}
-
-	// استفاده از state root واقعی
-	return bc.currentState.IntermediateRoot(true)
+	// اگر state وجود ندارد، فقط hash تراکنش‌ها را برگردان
+	hasher := sha3.NewLegacyKeccak256()
+	for _, tx := range txs {
+		hasher.Write(tx.Hash().Bytes())
+	}
+	var hash common.Hash
+	copy(hash[:], hasher.Sum(nil))
+	return hash
 }
 
 func (b *Block) Hash() common.Hash {
