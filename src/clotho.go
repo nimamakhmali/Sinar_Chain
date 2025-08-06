@@ -20,10 +20,13 @@ type ClothoSelector struct {
 	// Byzantine fault tolerance parameters
 	byzantineThreshold float64 // 2/3 for BFT
 	minVisibilityCount int     // Minimum visibility required
+
+	// اضافه کردن FameVoting به عنوان وابستگی
+	fameVoting *FameVoting
 }
 
 // NewClothoSelector ایجاد ClothoSelector جدید با پارامترهای Fantom
-func NewClothoSelector(dag *DAG) *ClothoSelector {
+func NewClothoSelector(dag *DAG, fameVoting *FameVoting) *ClothoSelector {
 	return &ClothoSelector{
 		dag:                dag,
 		clothos:            make(map[uint64]map[EventID]*Event),
@@ -31,6 +34,7 @@ func NewClothoSelector(dag *DAG) *ClothoSelector {
 		selectionCriteria:  make(map[string]interface{}),
 		byzantineThreshold: 2.0 / 3.0, // 2/3 for Byzantine fault tolerance
 		minVisibilityCount: 3,         // Minimum 3 events must see it
+		fameVoting:         fameVoting,
 	}
 }
 
@@ -112,9 +116,10 @@ func (cs *ClothoSelector) isClothoCandidateFantom(witness *Event, round uint64) 
 // isFamous بررسی اینکه آیا یک witness famous است - دقیقاً مطابق Fantom
 func (cs *ClothoSelector) isFamous(witness *Event, round uint64) bool {
 	// بررسی famous بودن بر اساس Fame Voting
-	// در نسخه کامل، این از FameVoting گرفته می‌شود
-
-	// فعلاً بررسی ساده
+	if cs.fameVoting != nil {
+		return cs.fameVoting.famousWitnesses[witness.Hash()]
+	}
+	// اگر FameVoting نبود، همان منطق قبلی را نگه دار
 	return witness.IsFamous != nil && *witness.IsFamous
 }
 
@@ -128,6 +133,12 @@ func (cs *ClothoSelector) hasEventsInNextRoundFantom(witness *Event, round uint6
 		if event.Round == nextRound {
 			eventCount++
 		}
+	}
+
+	// برای round 0، اگر هنوز events در round 1 نداریم،
+	// اجازه می‌دهیم که Clotho selection انجام شود
+	if round == 0 && eventCount == 0 {
+		return true // اجازه انتخاب Clotho برای round 0
 	}
 
 	// باید حداقل 3 events در round بعدی وجود داشته باشد
@@ -148,6 +159,12 @@ func (cs *ClothoSelector) hasConsensusInNextRoundFantom(witness *Event, round ui
 				seeCount++
 			}
 		}
+	}
+
+	// برای round 0، اگر هنوز events در round 1 نداریم،
+	// consensus را true در نظر می‌گیریم
+	if round == 0 && totalEvents == 0 {
+		return true // اجازه انتخاب Clotho برای round 0
 	}
 
 	// محاسبه نسبت visibility
@@ -252,6 +269,26 @@ func (cs *ClothoSelector) canSee(eventA, eventB EventID) bool {
 func (cs *ClothoSelector) getFamousWitnesses(round uint64) map[EventID]*Event {
 	famousWitnesses := make(map[EventID]*Event)
 
+	// برای round 0، genesis events را famous در نظر می‌گیریم
+	if round == 0 {
+		for _, event := range cs.dag.Events {
+			if event.Round == 0 && event.CreatorID == "genesis" {
+				famousWitnesses[event.Hash()] = event
+			}
+		}
+		// اگر هیچ genesis event پیدا نشد، اولین event را famous در نظر می‌گیریم
+		if len(famousWitnesses) == 0 {
+			for _, event := range cs.dag.Events {
+				if event.Round == 0 {
+					famousWitnesses[event.Hash()] = event
+					break // فقط اولین event
+				}
+			}
+		}
+		return famousWitnesses
+	}
+
+	// برای rounds دیگر، از Fame Voting استفاده می‌کنیم
 	for _, event := range cs.dag.Events {
 		if event.Round == round && cs.isFamous(event, round) {
 			famousWitnesses[event.Hash()] = event
